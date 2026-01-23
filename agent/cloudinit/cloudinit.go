@@ -20,6 +20,7 @@ type ScriptExecutor struct {
 	WriteFilesExecutor    IFileWriter
 	RunCmdExecutor        ICmdRunner
 	ParseTemplateExecutor ITemplateParser
+	Hostname              string
 }
 
 type bootstrapConfig struct {
@@ -38,9 +39,9 @@ type Files struct {
 }
 
 // Execute performs the following operations on the bootstrap script
-//  - parse the script to get the cloudinit data
-//  - execute the write_files directive
-//  - execute the run_cmd directive
+//   - parse the script to get the cloudinit data
+//   - execute the write_files directive
+//   - execute the run_cmd directive
 func (se ScriptExecutor) Execute(bootstrapScript string) error {
 	cloudInitData := bootstrapConfig{}
 	if err := yaml.Unmarshal([]byte(bootstrapScript), &cloudInitData); err != nil {
@@ -63,6 +64,40 @@ func (se ScriptExecutor) Execute(bootstrapScript string) error {
 		cloudInitData.FilesToWrite[i].Content, err = se.ParseTemplateExecutor.ParseTemplate(cloudInitData.FilesToWrite[i].Content)
 		if err != nil {
 			return errors.Wrap(err, fmt.Sprintf("error parse template content for %s", cloudInitData.FilesToWrite[i].Path))
+		}
+
+		// Phase 18: Auto-Scaling Integration
+		// Intercept kubeadm config to inject ProviderID
+		if se.Hostname != "" && (strings.Contains(cloudInitData.FilesToWrite[i].Path, "kubeadm") || strings.HasSuffix(cloudInitData.FilesToWrite[i].Path, ".yaml")) {
+			// Try to parse as YAML and check for nodeRegistration
+			var config map[string]interface{}
+			if err := yaml.Unmarshal([]byte(cloudInitData.FilesToWrite[i].Content), &config); err == nil {
+				if _, ok := config["nodeRegistration"]; ok {
+					// It looks like a kubeadm config
+					nodeReg, _ := config["nodeRegistration"].(map[string]interface{})
+					if nodeReg == nil {
+						nodeReg = make(map[string]interface{})
+					}
+
+					extraArgs, _ := nodeReg["kubeletExtraArgs"].(map[string]interface{})
+					if extraArgs == nil {
+						extraArgs = make(map[string]interface{})
+					}
+
+					// Inject provider-id if not present
+					if _, exists := extraArgs["provider-id"]; !exists {
+						extraArgs["provider-id"] = fmt.Sprintf("byoh://%s", se.Hostname)
+						nodeReg["kubeletExtraArgs"] = extraArgs
+						config["nodeRegistration"] = nodeReg
+
+						// Marshal back
+						newContent, err := yaml.Marshal(config)
+						if err == nil {
+							cloudInitData.FilesToWrite[i].Content = string(newContent)
+						}
+					}
+				}
+			}
 		}
 
 		err = se.WriteFilesExecutor.WriteToFile(&cloudInitData.FilesToWrite[i])

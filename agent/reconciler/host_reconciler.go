@@ -162,7 +162,7 @@ func (r *HostReconciler) executeInstallerController(ctx context.Context, byoHost
 	uninstallScript := string(secret.Data["uninstall"])
 
 	byoHost.Spec.UninstallationScript = &uninstallScript
-	installScript, err = r.parseScript(ctx, installScript)
+	installScript, err = r.parseScript(ctx, installScript, byoHost.Name)
 	if err != nil {
 		return err
 	}
@@ -192,10 +192,11 @@ func (r *HostReconciler) getBootstrapScript(ctx context.Context, dataSecretName,
 	return bootstrapSecret, nil
 }
 
-func (r *HostReconciler) parseScript(ctx context.Context, script string) (string, error) {
+func (r *HostReconciler) parseScript(ctx context.Context, script string, hostname string) (string, error) {
 	data, err := cloudinit.TemplateParser{
 		Template: map[string]string{
 			"BundleDownloadPath": r.DownloadPath,
+			"Hostname":           hostname,
 		},
 	}.ParseTemplate(script)
 	if err != nil {
@@ -258,7 +259,7 @@ func (r *HostReconciler) hostCleanUp(ctx context.Context, byoHost *infrastructur
 			}
 			logger.Info("Executing Uninstall script")
 			uninstallScript := *byoHost.Spec.UninstallationScript
-			uninstallScript, err = r.parseScript(ctx, uninstallScript)
+			uninstallScript, err = r.parseScript(ctx, uninstallScript, byoHost.Name)
 			if err != nil {
 				logger.Error(err, "error parsing Uninstallation script")
 				return err
@@ -314,7 +315,9 @@ func (r *HostReconciler) bootstrapK8sNode(ctx context.Context, bootstrapScript s
 	return cloudinit.ScriptExecutor{
 		WriteFilesExecutor:    r.FileWriter,
 		RunCmdExecutor:        r.CmdRunner,
-		ParseTemplateExecutor: r.TemplateParser}.Execute(bootstrapScript)
+		ParseTemplateExecutor: r.TemplateParser,
+		Hostname:              byoHost.Name,
+	}.Execute(bootstrapScript)
 }
 
 func (r *HostReconciler) removeSentinelFile(ctx context.Context, byoHost *infrastructurev1beta1.ByoHost) error {

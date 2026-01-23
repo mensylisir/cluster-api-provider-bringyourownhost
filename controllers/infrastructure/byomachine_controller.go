@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"reflect"
 	"regexp"
 	"strings"
@@ -394,7 +395,8 @@ func (r *ByoMachineReconciler) setNodeProviderID(ctx context.Context, remoteClie
 
 	if node.Spec.ProviderID != "" {
 		var match bool
-		match, err = regexp.MatchString(fmt.Sprintf("%s%s/.+", ProviderIDPrefix, host.Name), node.Spec.ProviderID)
+		// Match "byoh://<hostname>" or "byoh://<hostname>/<suffix>"
+		match, err = regexp.MatchString(fmt.Sprintf("^%s%s(/(.+))?$", ProviderIDPrefix, host.Name), node.Spec.ProviderID)
 		if err != nil {
 			return "", err
 		}
@@ -409,7 +411,8 @@ func (r *ByoMachineReconciler) setNodeProviderID(ctx context.Context, remoteClie
 		return "", err
 	}
 
-	node.Spec.ProviderID = fmt.Sprintf("%s%s/%s", ProviderIDPrefix, host.Name, util.RandomString(ProviderIDSuffixLength))
+	// Use simple format to match Agent: byoh://<hostname>
+	node.Spec.ProviderID = fmt.Sprintf("%s%s", ProviderIDPrefix, host.Name)
 
 	return node.Spec.ProviderID, helper.Patch(ctx, node)
 }
@@ -521,8 +524,9 @@ func (r *ByoMachineReconciler) attachByoHost(ctx context.Context, machineScope *
 		conditions.MarkFalse(machineScope.ByoMachine, infrav1.BYOHostReady, infrav1.BYOHostsUnavailableReason, clusterv1.ConditionSeverityInfo, "")
 		return ctrl.Result{RequeueAfter: RequeueForbyohost}, errors.New("no hosts found")
 	}
-	// TODO- Needs smarter logic
-	host := hostsList.Items[0]
+	// Optimization: Select a random host to reduce contention during concurrent scale-up
+	randomIndex := rand.Intn(len(hostsList.Items))
+	host := hostsList.Items[randomIndex]
 
 	byohostHelper, err := patch.NewHelper(&host, r.Client)
 	if err != nil {
@@ -645,6 +649,14 @@ func (r *ByoMachineReconciler) createInstallerConfig(ctx context.Context, machin
 		}
 		installerAnnotations := map[string]string{
 			infrav1.K8sVersionAnnotation: strings.Split(*machineScope.Machine.Spec.Version, "+")[0],
+		}
+		// Propagate proxy annotations from ByoCluster
+		for k, v := range machineScope.ByoCluster.Annotations {
+			if strings.HasPrefix(k, "infrastructure.cluster.x-k8s.io/http-proxy") ||
+				strings.HasPrefix(k, "infrastructure.cluster.x-k8s.io/https-proxy") ||
+				strings.HasPrefix(k, "infrastructure.cluster.x-k8s.io/no-proxy") {
+				installerAnnotations[k] = v
+			}
 		}
 		installerConfig, err = external.GenerateTemplate(&external.GenerateTemplateInput{
 			Template:    template,

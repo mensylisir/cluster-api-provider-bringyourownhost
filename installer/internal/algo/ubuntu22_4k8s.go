@@ -1,4 +1,4 @@
-// Copyright 2022 VMware, Inc. All Rights Reserved.
+// Copyright 2024 VMware, Inc. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 package algo
@@ -10,20 +10,15 @@ import (
 	"html/template"
 )
 
-const (
-	// ImgpkgVersion defines the imgpkg version that will be installed on host if imgpkg is not already installed
-	ImgpkgVersion = "v0.36.4"
-)
-
-// Ubuntu20_04Installer represent the installer implementation for ubunto20.04.* os distribution
-type Ubuntu20_04Installer struct {
+// Ubuntu22_04Installer represent the installer implementation for ubunto22.04.* os distribution
+type Ubuntu22_04Installer struct {
 	install   string
 	uninstall string
 	upgrade   string
 }
 
-// NewUbuntu20_04Installer will return new Ubuntu20_04Installer instance
-func NewUbuntu20_04Installer(ctx context.Context, arch, bundleAddrs, k8sVersion string, proxyConfig map[string]string) (*Ubuntu20_04Installer, error) {
+// NewUbuntu22_04Installer will return new Ubuntu22_04Installer instance
+func NewUbuntu22_04Installer(ctx context.Context, arch, bundleAddrs, k8sVersion string, proxyConfig map[string]string) (*Ubuntu22_04Installer, error) {
 	parseFn := func(script string) (string, error) {
 		parser, err := template.New("parser").Parse(script)
 		if err != nil {
@@ -45,19 +40,19 @@ func NewUbuntu20_04Installer(ctx context.Context, arch, bundleAddrs, k8sVersion 
 		return tpl.String(), nil
 	}
 
-	install, err := parseFn(DoUbuntu20_4K8s1_22)
+	install, err := parseFn(DoUbuntu22_4K8s)
 	if err != nil {
 		return nil, err
 	}
-	uninstall, err := parseFn(UndoUbuntu20_4K8s1_22)
+	uninstall, err := parseFn(UndoUbuntu22_4K8s)
 	if err != nil {
 		return nil, err
 	}
-	upgrade, err := parseFn(UpgradeUbuntu20_4K8s)
+	upgrade, err := parseFn(UpgradeUbuntu22_4K8s)
 	if err != nil {
 		return nil, err
 	}
-	return &Ubuntu20_04Installer{
+	return &Ubuntu22_04Installer{
 		install:   install,
 		uninstall: uninstall,
 		upgrade:   upgrade,
@@ -65,24 +60,27 @@ func NewUbuntu20_04Installer(ctx context.Context, arch, bundleAddrs, k8sVersion 
 }
 
 // Install will return k8s install script
-func (s *Ubuntu20_04Installer) Install() string {
+func (s *Ubuntu22_04Installer) Install() string {
 	return s.install
 }
 
 // Uninstall will return k8s uninstall script
-func (s *Ubuntu20_04Installer) Uninstall() string {
+func (s *Ubuntu22_04Installer) Uninstall() string {
 	return s.uninstall
 }
 
 // Upgrade will return k8s upgrade script
-func (s *Ubuntu20_04Installer) Upgrade() string {
+func (s *Ubuntu22_04Installer) Upgrade() string {
 	return s.upgrade
 }
 
 // contains the installation and uninstallation steps for the supported os and k8s
 var (
-	DoUbuntu20_4K8s1_22 = `
+	DoUbuntu22_4K8s = `
 set -euox pipefail
+
+# Debug mode: capture logs on failure
+trap 'echo "Installation failed. Collecting logs..."; journalctl -u kubelet --no-pager | tail -n 100; cat /var/log/byoh-agent.log || true' ERR
 
 BUNDLE_DOWNLOAD_PATH={{.BundleDownloadPath}}
 BUNDLE_ADDR={{.BundleAddrs}}
@@ -120,6 +118,18 @@ else
     imgpkg pull -i $BUNDLE_ADDR -o $BUNDLE_PATH
 fi
 
+## Pre-flight Check: Swap
+if swapon --show | grep -q .; then
+    echo "Error: Swap is enabled. Please disable swap before proceeding."
+    exit 1
+fi
+
+## Pre-flight Check: Apt Lock
+if fuser /var/lib/dpkg/lock >/dev/null 2>&1 || fuser /var/lib/apt/lists/lock >/dev/null 2>&1; then
+    echo "Error: Apt is currently locked by another process. Please wait and try again."
+    exit 1
+fi
+
 
 ## disable swap
 swapoff -a && sed -ri '/\sswap\s/s/^#?/#/' /etc/fstab
@@ -127,6 +137,12 @@ swapoff -a && sed -ri '/\sswap\s/s/^#?/#/' /etc/fstab
 ## disable firewall
 if command -v ufw >>/dev/null; then
 	ufw disable
+fi
+
+## ensure iptables is installed (required for kube-proxy)
+if ! command -v iptables >>/dev/null; then
+	echo "installing iptables"
+	apt-get update && apt-get install -y iptables
 fi
 
 ## load kernal modules
@@ -143,10 +159,15 @@ done
 ## intalling containerd
 tar -C / -xvf "$BUNDLE_PATH/containerd.tar"
 
+## configuring containerd with SystemdCgroup = true (required for cgroup v2)
+mkdir -p /etc/containerd
+containerd config default > /etc/containerd/config.toml
+sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+
 ## starting containerd service
 systemctl daemon-reload && systemctl enable containerd && systemctl start containerd`
 
-	UndoUbuntu20_4K8s1_22 = `
+	UndoUbuntu22_4K8s = `
 set -euox pipefail
 
 BUNDLE_DOWNLOAD_PATH={{.BundleDownloadPath}}
@@ -197,7 +218,7 @@ swapon -a && sed -ri '/\sswap\s/s/^#?//' /etc/fstab
 
 rm -rf $BUNDLE_PATH`
 
-	UpgradeUbuntu20_4K8s = `
+	UpgradeUbuntu22_4K8s = `
 set -euox pipefail
 
 BUNDLE_DOWNLOAD_PATH={{.BundleDownloadPath}}

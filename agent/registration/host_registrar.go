@@ -170,7 +170,8 @@ func getOperatingSystem(f func(string) ([]byte, error)) (string, error) {
 	}
 	line := rex.FindAllStringSubmatch(string(bytes), -1)
 	if len(line) > 0 {
-		return strings.Trim(line[0][2], "\""), nil
+		osName := strings.Trim(line[0][2], "\"")
+		return strings.ReplaceAll(osName, " LTS", ""), nil
 	}
 	return "Unknown", nil
 }

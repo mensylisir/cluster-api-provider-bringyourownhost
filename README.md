@@ -45,6 +45,7 @@ __BYOH__ is a Cluster API Infrastructure Provider for already-provisioned hosts 
 - Native Kubernetes manifests and API
 - Support for single and multi-node control plane clusters
 - Support already provisioned Linux VMs with Ubuntu 20.04
+- **Auto-Scaling**: Seamless integration with Kubernetes Cluster Autoscaler. [Read more](docs/autoscaler.md)
 
 ## Getting Started
 Check out the [getting_started](https://github.com/vmware-tanzu/cluster-api-provider-bringyourownhost/blob/main/docs/getting_started.md) guide for launching a BYOH workload cluster
@@ -91,11 +92,13 @@ If someone wants to implement their own installer controller then they need to f
 - BYOH is currently compatible wth Cluster API v1beta1 (v1.0)
 
 ## Supported OS and Kubernetes versions
-| Operating System  | Architecture  | Kubernetes v1.24.* | Kubernetes v1.25.* | Kubernetes v1.26.* |
-| ------------------|---------------|:------------------:|:------------------:|:------------------:|
-| Ubuntu 20.04.*    | amd64         |         ✓          |         ✓          |         ✓          |
+| Operating System  | Architecture  | Supported Kubernetes Versions |
+| ------------------|---------------|-------------------------------|
+| Ubuntu 20.04.*    | amd64         | v1.24.*, v1.25.*, v1.26.*     |
+| Ubuntu 22.04.*    | amd64         | v1.25.* - v1.35.*             |
+| Ubuntu 24.04.*    | amd64         | v1.27.* - v1.35.*             |
 
-**NOTE:**  The '*' in OS means that all Ubuntu 20.04 patches are supported.
+**NOTE:**  The '*' in OS means that all Ubuntu 20.04 and 24.04 patches are supported.
 
 **NOTE:**  The '*' in the K8s version means that the K8s minor release is supported but it may happen that a BYOH bundle for a specific patch may not exist in the OCI registry. 
 

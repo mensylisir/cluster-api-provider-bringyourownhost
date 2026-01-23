@@ -38,7 +38,8 @@ import (
 // labelFlags is a flag that holds a map of label key values.
 // One or more key value pairs can be passed using the same flag
 // The following example sets labelFlags with two items:
-//     -label "key1=value1" -label "key2=value2"
+//
+//	-label "key1=value1" -label "key2=value2"
 type labelFlags map[string]string
 
 // String implements flag.Value interface
@@ -51,7 +52,7 @@ func (l *labelFlags) String() string {
 }
 
 // Set implements flag.Value interface
-//nolint: gomnd
+// nolint: gomnd
 func (l *labelFlags) Set(value string) error {
 	// account for comma-separated key-value pairs in a single invocation
 	if len(strings.Split(value, ",")) > 1 {
@@ -139,6 +140,22 @@ func main() {
 		fmt.Printf("byoh-hostagent version: %#v\n", info)
 		return
 	}
+
+	// Set Agent Info Metric
+	info := version.Get()
+	AgentInfoMetric.WithLabelValues(info.Major+"."+info.Minor, "linux", "amd64").Set(1)
+
+	// Start Heartbeat Updater
+	go func() {
+		for {
+			UpdateHeartbeat()
+			time.Sleep(10 * time.Second)
+		}
+	}()
+
+	// Start Drift Detector (Phase 16)
+	StartDriftDetector(5 * time.Minute)
+
 	scheme = runtime.NewScheme()
 	_ = infrastructurev1beta1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
@@ -166,6 +183,17 @@ func main() {
 	config := getConfig(logger)
 	k8sClient := getClient(logger, config)
 	registration.LocalHostRegistrar = &registration.HostRegistrar{K8sClient: k8sClient}
+
+	// Detect GPU and add labels
+	gpuInfo := GetGPUInfo()
+	if gpuInfo.Present {
+		labels["nvidia.com/gpu.present"] = "true"
+		if gpuInfo.Model != "" {
+			labels["nvidia.com/gpu.model"] = gpuInfo.Model
+		}
+		logger.Info("Detected NVIDIA GPU", "model", gpuInfo.Model)
+	}
+
 	err = registration.LocalHostRegistrar.Register(hostName, namespace, labels)
 	if err != nil {
 		logger.Error(err, "error registering host %s registration in namespace %s", hostName, namespace)

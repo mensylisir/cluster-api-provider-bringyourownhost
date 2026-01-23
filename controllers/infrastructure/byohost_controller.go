@@ -6,7 +6,9 @@ package controllers
 import (
 	"context"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/cluster-api/util/patch"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -35,7 +37,43 @@ type ByoHostReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.8.3/pkg/reconcile
 func (r *ByoHostReconciler) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result, reterr error) {
-	_ = log.FromContext(ctx)
+	logger := log.FromContext(ctx)
+
+	// Fetch the ByoHost instance
+	byoHost := &infrastructurev1beta1.ByoHost{}
+	if err := r.Client.Get(ctx, req.NamespacedName, byoHost); err != nil {
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
+	}
+
+	// Initialize the patch helper
+	helper, err := patch.NewHelper(byoHost, r.Client)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	defer func() {
+		if err := helper.Patch(ctx, byoHost); err != nil && reterr == nil {
+			logger.Error(err, "failed to patch byohost")
+			reterr = err
+		}
+	}()
+
+	// Handle Host Cleanup
+	if _, ok := byoHost.Annotations[infrastructurev1beta1.HostCleanupAnnotation]; ok {
+		logger.Info("Host cleanup annotation detected, releasing host", "host", byoHost.Name)
+
+		// Clear MachineRef
+		byoHost.Status.MachineRef = nil
+
+		// Remove Annotation
+		delete(byoHost.Annotations, infrastructurev1beta1.HostCleanupAnnotation)
+
+		logger.Info("Host released successfully")
+	}
+
 	return ctrl.Result{}, nil
 }
 

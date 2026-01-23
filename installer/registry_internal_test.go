@@ -109,14 +109,22 @@ var _ = Describe("Byohost Installer Tests", func() {
 
 		It("Should match with the supported os and k8s versions", func() {
 			osFilters, osBundles := r.ListOS()
-			Expect(osFilters).To(ContainElements("Ubuntu_20.04.*_x86-64"))
-			Expect(osFilters).To(HaveLen(1))
-			Expect(osBundles).To(ContainElements("Ubuntu_20.04.1_x86-64"))
-			Expect(osBundles).To(HaveLen(1))
+			Expect(osFilters).To(ContainElements("Ubuntu_20.04.*_x86-64", "Ubuntu_22.04.*_x86-64", "Ubuntu_24.04.*_x86-64"))
+			Expect(osFilters).To(HaveLen(3))
+			Expect(osBundles).To(ContainElements("Ubuntu_20.04.1_x86-64", "Ubuntu_22.04.1_x86-64", "Ubuntu_24.04.1_x86-64"))
+			Expect(osBundles).To(HaveLen(3))
 
 			osBundleResult := r.ListK8s("Ubuntu_20.04.1_x86-64")
 			Expect(osBundleResult).To(ContainElements("v1.24.*", "v1.25.*", "v1.26.*"))
 			Expect(osBundleResult).To(HaveLen(3))
+
+			osBundleResult22 := r.ListK8s("Ubuntu_22.04.1_x86-64")
+			Expect(osBundleResult22).To(ContainElements("v1.25.*", "v1.26.*", "v1.27.*", "v1.28.*", "v1.29.*", "v1.30.*", "v1.31.*", "v1.32.*", "v1.33.*", "v1.34.*", "v1.35.*"))
+			Expect(osBundleResult22).To(HaveLen(11))
+
+			osBundleResult24 := r.ListK8s("Ubuntu_24.04.1_x86-64")
+			Expect(osBundleResult24).To(ContainElements("v1.27.*", "v1.28.*", "v1.29.*", "v1.30.*", "v1.31.*", "v1.32.*", "v1.33.*", "v1.34.*", "v1.35.*"))
+			Expect(osBundleResult24).To(HaveLen(9))
 		})
 	})
 })

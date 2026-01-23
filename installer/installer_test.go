@@ -33,6 +33,24 @@ var _ = Describe("Byohost Installer Tests", func() {
 		})
 	})
 
+	Context("When installer object is created for Ubuntu 24.04 and valid arch", func() {
+		It("should create the object successfully", func() {
+			os = "Ubuntu 24.04"
+			k8sversion = "v1.27.1"
+			_, err := installer.NewInstaller(context.TODO(), os, arch, k8sversion, downloader)
+			Expect(err).ShouldNot(HaveOccurred())
+		})
+	})
+
+	Context("When installer object is created for Ubuntu 22.04 and valid arch", func() {
+		It("should create the object successfully", func() {
+			os = "Ubuntu 22.04"
+			k8sversion = "v1.26.1"
+			_, err := installer.NewInstaller(context.TODO(), os, arch, k8sversion, downloader)
+			Expect(err).ShouldNot(HaveOccurred())
+		})
+	})
+
 	Context("When installer object is created for invalid arch", func() {
 		It("should fail create the object", func() {
 			arch = "arm64"

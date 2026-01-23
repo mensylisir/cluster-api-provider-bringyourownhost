@@ -14,6 +14,7 @@ import (
 type K8sInstaller interface {
 	Install() string
 	Uninstall() string
+	Upgrade() string
 }
 
 // Error string wrapper for errors returned by the installer
@@ -47,6 +48,7 @@ const (
 // archOldNameMap keeps the mapping of architecture new name to old name mapping
 var archOldNameMap = map[string]string{
 	"amd64": "x86-64",
+	"arm64": "aarch64",
 }
 
 // NewInstaller will return a new installer
@@ -66,5 +68,13 @@ func NewInstaller(ctx context.Context, osDist, arch, k8sVersion string, download
 	osbundle := reg.ResolveOsToOsBundle(osArch)
 	addrs := downloader.GetBundleAddr(osbundle, k8sVersion)
 
-	return algo.NewUbuntu20_04Installer(ctx, arch, addrs)
+	if strings.Contains(osbundle, "Ubuntu_24.04") {
+		return algo.NewUbuntu24_04Installer(ctx, arch, addrs, k8sVersion, nil)
+	}
+
+	if strings.Contains(osbundle, "Ubuntu_22.04") {
+		return algo.NewUbuntu22_04Installer(ctx, arch, addrs, k8sVersion, nil)
+	}
+
+	return algo.NewUbuntu20_04Installer(ctx, arch, addrs, k8sVersion, nil)
 }
