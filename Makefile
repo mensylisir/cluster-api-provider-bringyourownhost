@@ -6,10 +6,12 @@ STAGING_REGISTRY ?= gcr.io/k8s-staging-cluster-api
 
 IMAGE_NAME ?= cluster-api-byoh-controller
 TAG ?= dev
+VERSION ?= v0.1.0
 RELEASE_DIR := _dist
 
 # Image URL to use all building/pushing image targets
 IMG ?= ${STAGING_REGISTRY}/${IMAGE_NAME}:${TAG}
+IMG_LATEST ?= ${STAGING_REGISTRY}/${IMAGE_NAME}:latest
 BYOH_BASE_IMG = byoh/node:e2e
 BYOH_BASE_IMG_DEV = byoh/node:dev
 # Produce CRDs that work back to Kubernetes 1.11 (no version conversion)
@@ -111,6 +113,13 @@ run: manifests generate fmt vet ## Run a controller from your host.
 docker-build: ## Build docker image with the manager.
 	docker build -t ${IMG} .
 
+docker-buildx: ## Build multi-architecture docker image with the manager using buildx.
+	docker buildx build \
+		--platform linux/amd64,linux/arm64 \
+		--tag ${IMG} \
+		--tag ${IMG_LATEST} \
+		--push .
+
 docker-push: ## Push docker image with the manager.
 	docker push ${IMG}
 
@@ -204,7 +213,7 @@ publish-infra-yaml:kustomize # Generate infrastructure-components.yaml for the p
 
 CONTROLLER_GEN = $(shell pwd)/bin/controller-gen
 controller-gen: ## Download controller-gen locally if necessary.
-	$(call go-get-tool,$(CONTROLLER_GEN),sigs.k8s.io/controller-tools/cmd/controller-gen@v0.10.0)
+	$(call go-get-tool,$(CONTROLLER_GEN),sigs.k8s.io/controller-tools/cmd/controller-gen@v0.20.0)
 
 KUSTOMIZE = $(shell pwd)/bin/kustomize
 kustomize: ## Download kustomize locally if necessary.
@@ -214,21 +223,22 @@ YQ = $(shell pwd)/bin/yq
 yq: ## Download kustomize locally if necessary.
 	$(call go-get-tool,$(YQ),github.com/mikefarah/yq/v4@v4.31.1)
 
-host-agent-binaries: ## Builds the binaries for the host-agent
-	RELEASE_BINARY=./byoh-hostagent GOOS=linux GOARCH=amd64 GOLDFLAGS="$(LDFLAGS) $(STATIC)" \
-	HOST_AGENT_DIR=./$(HOST_AGENT_DIR) $(MAKE) host-agent-binary
+host-agent-binaries: host-agent-binaries-all
+	@echo "Built all architectures: byoh-hostagent-linux-amd64 and byoh-hostagent-linux-arm64"
 
 host-agent-binary: $(RELEASE_DIR)
 	docker run \
 		--rm \
+		--network host \
 		-e CGO_ENABLED=0 \
 		-e GOOS=$(GOOS) \
 		-e GOARCH=$(GOARCH) \
+		-e GOPROXY=https://goproxy.cn,direct \
 		-v "$$(pwd):/workspace$(DOCKER_VOL_OPTS)" \
 		-w /workspace \
-		golang:1.20.7 \
-		go build -buildvcs=false -a -ldflags "$(GOLDFLAGS)" \
-		-o ./bin/$(notdir $(RELEASE_BINARY))-$(GOOS)-$(GOARCH) $(HOST_AGENT_DIR)
+		golang:1.25.5 \
+		go build -buildvcs=false -a -ldflags "$(LDFLAGS)" \
+		-o ./bin/$(notdir $(RELEASE_BINARY))-$(GOOS)-$(GOARCH) /workspace/$(HOST_AGENT_DIR)
 
 
 ##@ Release
@@ -272,3 +282,19 @@ GOBIN=$(PROJECT_DIR)/bin go install $(2) ;\
 rm -rf $$TMP_DIR ;\
 }
 endef
+
+##@ ARM Build Support
+
+host-agent-binary-linux-amd64:
+	$(MAKE) host-agent-binary GOOS=linux GOARCH=amd64
+
+host-agent-binary-linux-arm64:
+	$(MAKE) host-agent-binary GOOS=linux GOARCH=arm64
+
+host-agent-binaries-amd64: host-agent-binary-linux-amd64
+	@echo "Built byoh-hostagent-linux-amd64"
+
+host-agent-binaries-all: host-agent-binary-linux-amd64 host-agent-binary-linux-arm64
+	@echo "✅ Built: byoh-hostagent-linux-amd64 and byoh-hostagent-linux-arm64"
+
+.PHONY: host-agent-binary host-agent-binary-linux-amd64 host-agent-binary-linux-arm64 host-agent-binaries host-agent-binaries-amd64 host-agent-binaries-all
