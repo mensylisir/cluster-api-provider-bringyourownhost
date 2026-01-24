@@ -14,6 +14,41 @@ const (
 	// resources associated with ByoMachine before removing it from the
 	// API Server.
 	MachineFinalizer = "byomachine.infrastructure.cluster.x-k8s.io"
+
+	// Scale-from-zero and autoscaling annotations
+	// See: https://cluster-api.sigs.k8s.io/tasks/automated-machine-management/autoscaling
+
+	// CapacityCPUAnnotation defines CPU capacity for scale-from-zero
+	CapacityCPUAnnotation = "capacity.cluster-autoscaler.kubernetes.io/cpu"
+	// CapacityMemoryAnnotation defines memory capacity for scale-from-zero
+	CapacityMemoryAnnotation = "capacity.cluster-autoscaler.kubernetes.io/memory"
+	// CapacityEphemeralDiskAnnotation defines ephemeral disk capacity for scale-from-zero
+	CapacityEphemeralDiskAnnotation = "capacity.cluster-autoscaler.kubernetes.io/ephemeral-disk"
+	// CapacityMaxPodsAnnotation defines max pods for scale-from-zero
+	CapacityMaxPodsAnnotation = "capacity.cluster-autoscaler.kubernetes.io/maxPods"
+	// CapacityGPUTypeAnnotation defines GPU type for scale-from-zero
+	CapacityGPUTypeAnnotation = "capacity.cluster-autoscaler.kubernetes.io/gpu-type"
+	// CapacityGPUCountAnnotation defines GPU count for scale-from-zero
+	CapacityGPUCountAnnotation = "capacity.cluster-autoscaler.kubernetes.io/gpu-count"
+	// CapacityLabelsAnnotation defines labels for scale-from-zero
+	CapacityLabelsAnnotation = "capacity.cluster-autoscaler.kubernetes.io/labels"
+	// CapacityTaintsAnnotation defines taints for scale-from-zero
+	CapacityTaintsAnnotation = "capacity.cluster-autoscaler.kubernetes.io/taints"
+	// CapacityCSIDriversAnnotation defines CSI drivers for scale-from-zero
+	CapacityCSIDriversAnnotation = "capacity.cluster-autoscaler.kubernetes.io/csi-driver"
+
+	// Node group autoscaling annotations
+	// NodeGroupMinSizeAnnotation defines minimum node group size for autoscaler
+	NodeGroupMinSizeAnnotation = "cluster.x-k8s.io/cluster-api-autoscaler-node-group-min-size"
+	// NodeGroupMaxSizeAnnotation defines maximum node group size for autoscaler
+	NodeGroupMaxSizeAnnotation = "cluster.x-k8s.io/cluster-api-autoscaler-node-group-max-size"
+
+	// Per-nodegroup autoscaling options
+	AutoscalingOptionsScaleDownUtilizationThreshold = "cluster.x-k8s.io/autoscaling-options-scaledownutilizationthreshold"
+	AutoscalingOptionsScaleDownUnneededTime         = "cluster.x-k8s.io/autoscaling-options-scaledownunneededtime"
+	AutoscalingOptionsScaleDownUnreadyTime          = "cluster.x-k8s.io/autoscaling-options-scaledownunreadytime"
+	AutoscalingOptionsMaxNodeProvisionTime          = "cluster.x-k8s.io/autoscaling-options-maxnodeprovisiontime"
+	AutoscalingOptionsMaxNodeStartupTime            = "cluster.x-k8s.io/autoscaling-options-maxnodestartuptime"
 )
 
 // ByoMachineSpec defines the desired state of ByoMachine
@@ -66,6 +101,32 @@ type ByoMachineStatus struct {
 	// Conditions defines current service state of the BYOMachine.
 	// +optional
 	Conditions clusterv1.Conditions `json:"conditions,omitempty"`
+
+	// CleanupStarted indicates that host cleanup has been initiated.
+	// +optional
+	CleanupStarted bool `json:"cleanupStarted,omitempty"`
+
+	// CleanupCompleted indicates that host cleanup has finished.
+	// +optional
+	CleanupCompleted bool `json:"cleanupCompleted,omitempty"`
+
+	// NodeRef is a reference to the created Node object.
+	// +optional
+	NodeRef *corev1.ObjectReference `json:"nodeRef,omitempty"`
+
+	// NodeStartupTimeout indicates that the node startup has timed out.
+	// This is set by MachineHealthCheck when nodeStartupTimeoutSeconds is exceeded.
+	// +optional
+	NodeStartupTimeout bool `json:"nodeStartupTimeout,omitempty"`
+
+	// LastBootstrapTimestamp records the timestamp of the last bootstrap attempt.
+	// +optional
+	LastBootstrapTimestamp *metav1.Time `json:"lastBootstrapTimestamp,omitempty"`
+
+	// Addresses contains the associated addresses for the machine.
+	// These are propagated to Machine.status.addresses for user convenience.
+	// +optional
+	Addresses []clusterv1.MachineAddress `json:"addresses,omitempty"`
 }
 
 //+kubebuilder:object:root=true

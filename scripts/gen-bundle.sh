@@ -1,36 +1,82 @@
 #!/bin/bash
-# Usage: ./gen-bundle.sh <OS_VERSION> <K8S_VERSION> <BUNDLE_TAG>
+# Usage: ./gen-bundle.sh <OS_VERSION> <K8S_VERSION> <BUNDLE_TAG> [--arch <amd64|arm64>]
 # Example: ./gen-bundle.sh 24.04 v1.31.0 my-registry/bundle:v1.31.0-u24.04
+# Example: ./gen-bundle.sh 24.04 v1.31.0 my-registry/bundle:v1.31.0-u24.04 --arch arm64
 
 set -e
 
-if [ "$#" -ne 3 ]; then
-    echo "Usage: $0 <OS_VERSION> <K8S_VERSION> <BUNDLE_TAG>"
+# Parse arguments
+OS_VER=""
+K8S_VER=""
+BUNDLE_TAG=""
+ARCH="amd64"
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --arch)
+      ARCH="$2"
+      shift 2
+      ;;
+    *)
+      if [ -z "$OS_VER" ]; then
+        OS_VER=$1
+      elif [ -z "$K8S_VER" ]; then
+        K8S_VER=$1
+      elif [ -z "$BUNDLE_TAG" ]; then
+        BUNDLE_TAG=$1
+      fi
+      shift
+      ;;
+  esac
+done
+
+if [ -z "$OS_VER" ] || [ -z "$K8S_VER" ] || [ -z "$BUNDLE_TAG" ]; then
+    echo "Usage: $0 <OS_VERSION> <K8S_VERSION> <BUNDLE_TAG> [--arch <amd64|arm64>]"
     echo "Example: $0 24.04 v1.31.0 my-registry/bundle:v1.31.0-u24.04"
+    echo "Example: $0 24.04 v1.31.0 my-registry/bundle:v1.31.0-u24.04 --arch arm64"
     exit 1
 fi
 
-OS_VER=$1
-K8S_VER=$2
-BUNDLE_TAG=$3
-
 WORKDIR="bundle-build"
-rm -rf $WORKDIR && mkdir -p $WORKDIR/debs
+rm -rf $WORKDIR && mkdir -p $WORKDIR/bin $WORKDIR/cni/bin $WORKDIR/containerd/bin
 
-echo "Step 1: Downloading packages inside Docker..."
-# Use Docker to download debs in a clean environment matching the target OS
-docker run --rm -v $(pwd)/$WORKDIR:/out ubuntu:$OS_VER bash -c "
-    apt-get update && apt-get install -y curl gpg
-    K8S_MAJOR_MINOR=\$(echo $K8S_VER | cut -d. -f1,2)
-    curl -fsSL https://pkgs.k8s.io/core:/stable:/\$K8S_MAJOR_MINOR/deb/Release.key | gpg --dearmor -o /usr/share/keyrings/kubernetes-apt-keyring.gpg
-    echo 'deb [signed-by=/usr/share/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/\$K8S_MAJOR_MINOR/deb/ /' > /etc/apt/sources.list.d/kubernetes.list
-    apt-get update
-    cd /out/debs
-    # Download packages without installing
-    apt-get download kubelet kubeadm kubectl kubernetes-cni cri-tools containerd
-"
+echo "Step 1: Downloading Kubernetes binaries for ${K8S_VERSION} (${ARCH})..."
 
-echo "Step 2: Preparing config files..."
+# Download kubeadm
+curl -fsSL "https://dl.k8s.io/${K8S_VER}/bin/linux/${ARCH}/kubeadm" -o $WORKDIR/bin/kubeadm
+chmod +x $WORKDIR/bin/kubeadm
+
+# Download kubectl
+curl -fsSL "https://dl.k8s.io/${K8S_VER}/bin/linux/${ARCH}/kubectl" -o $WORKDIR/bin/kubectl
+chmod +x $WORKDIR/bin/kubectl
+
+# Download kubelet
+curl -fsSL "https://dl.k8s.io/${K8S_VER}/bin/linux/${ARCH}/kubelet" -o $WORKDIR/bin/kubelet
+chmod +x $WORKDIR/bin/kubelet
+
+# Download cri-tools (crictl)
+curl -fsSL "https://github.com/kubernetes-sigs/cri-tools/releases/download/${K8S_VER}/crictl-${K8S_VER}-linux-${ARCH}.tar.gz" -o /tmp/crictl.tar.gz
+tar -xzf /tmp/crictl.tar.gz -C /tmp
+mv /tmp/crictl-${K8S_VER}-linux-${ARCH}/crictl $WORKDIR/bin/
+rm -rf /tmp/crictl-${K8S_VER}-linux-${ARCH} /tmp/crictl.tar.gz
+
+echo "Step 2: Downloading CNI plugins..."
+CNI_VERSION="v1.4.0"
+curl -fsSL "https://github.com/containernetworking/plugins/releases/download/${CNI_VERSION}/cni-plugins-linux-${ARCH}-${CNI_VERSION}.tgz" -o /tmp/cni.tar.gz
+tar -xzf /tmp/cni.tar.gz -C $WORKDIR/cni/bin/
+rm /tmp/cni.tar.gz
+
+echo "Step 3: Downloading containerd..."
+CONTAINERD_VERSION="v1.7.0"
+RUNC_VERSION="v1.1.10"
+curl -fsSL "https://github.com/containerd/containerd/releases/download/${CONTAINERD_VERSION}/containerd-${CONTAINERD_VERSION}-linux-${ARCH}.tar.gz" -o /tmp/containerd.tar.gz
+tar -xzf /tmp/containerd.tar.gz -C $WORKDIR/containerd/
+rm /tmp/containerd.tar.gz
+
+curl -fsSL "https://github.com/opencontainers/runc/releases/download/${RUNC_VERSION}/runc.${ARCH}" -o $WORKDIR/containerd/bin/runc
+chmod +x $WORKDIR/containerd/bin/runc
+
+echo "Step 4: Preparing config files..."
 mkdir -p $WORKDIR/conf
 # Default sysctl config
 cat <<EOF > $WORKDIR/conf/k8s.conf
@@ -38,13 +84,13 @@ net.bridge.bridge-nf-call-iptables  = 1
 net.bridge.bridge-nf-call-ip6tables = 1
 net.ipv4.ip_forward                 = 1
 EOF
+cat <<EOF > $WORKDIR/conf/modules.conf
+overlay
+br_netfilter
+EOF
 tar -cvf $WORKDIR/conf.tar -C $WORKDIR/conf .
 
-echo "Step 3: Pushing bundle with imgpkg..."
-# Move debs to root of bundle dir
-mv $WORKDIR/debs/*.deb $WORKDIR/
-rmdir $WORKDIR/debs
-
+echo "Step 5: Pushing bundle with imgpkg..."
 # Push bundle
 imgpkg push -b $BUNDLE_TAG -f $WORKDIR
 

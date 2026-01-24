@@ -5,6 +5,7 @@ package controllers
 
 import (
 	"context"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -14,6 +15,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	infrastructurev1beta1 "github.com/vmware-tanzu/cluster-api-provider-bringyourownhost/apis/infrastructure/v1beta1"
+)
+
+const (
+	// hostCleanupTimeout is the maximum time to wait for Agent to complete cleanup
+	// If the Agent is unavailable (crashed, host down), we force cleanup after this timeout
+	hostCleanupTimeout = 5 * time.Minute
 )
 
 // ByoHostReconciler reconciles a ByoHost object
@@ -29,10 +36,6 @@ type ByoHostReconciler struct {
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the ByoHost object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
 //
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.8.3/pkg/reconcile
@@ -63,15 +66,41 @@ func (r *ByoHostReconciler) Reconcile(ctx context.Context, req ctrl.Request) (_ 
 
 	// Handle Host Cleanup
 	if _, ok := byoHost.Annotations[infrastructurev1beta1.HostCleanupAnnotation]; ok {
-		logger.Info("Host cleanup annotation detected, releasing host", "host", byoHost.Name)
+		logger.Info("Host cleanup annotation detected", "host", byoHost.Name)
 
-		// Clear MachineRef
-		byoHost.Status.MachineRef = nil
+		// Check if we should force cleanup (Agent is unavailable)
+		shouldForceCleanup := false
+		if !byoHost.DeletionTimestamp.IsZero() {
+			// If ByoHost is being deleted and has been for longer than cleanup timeout,
+			// force cleanup (Agent is likely unavailable)
+			deletionDuration := time.Since(byoHost.DeletionTimestamp.Time)
+			if deletionDuration > hostCleanupTimeout {
+				logger.Info("ByoHost deletion timeout exceeded, forcing cleanup",
+					"timeout", hostCleanupTimeout, "elapsed", deletionDuration)
+				shouldForceCleanup = true
+			}
+		}
 
-		// Remove Annotation
-		delete(byoHost.Annotations, infrastructurev1beta1.HostCleanupAnnotation)
+		// If MachineRef is already cleared or we're forcing cleanup, just remove the annotation
+		if byoHost.Status.MachineRef == nil || shouldForceCleanup {
+			logger.Info("Releasing host (Agent unavailable or cleanup already complete)",
+				"forceCleanup", shouldForceCleanup)
 
-		logger.Info("Host released successfully")
+			// Clear MachineRef if not already cleared
+			byoHost.Status.MachineRef = nil
+
+			// Remove Annotation
+			delete(byoHost.Annotations, infrastructurev1beta1.HostCleanupAnnotation)
+
+			logger.Info("Host released successfully")
+			return ctrl.Result{}, nil
+		}
+
+		// MachineRef exists and we're within timeout - check if Agent is still processing
+		// The Agent will handle cleanup and clear MachineRef
+		// If the annotation persists beyond cleanup timeout, the next reconcile will force cleanup
+		logger.Info("Waiting for Agent to complete cleanup",
+			"machineRef", byoHost.Status.MachineRef.Name)
 	}
 
 	return ctrl.Result{}, nil

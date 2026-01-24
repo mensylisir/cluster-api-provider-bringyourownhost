@@ -143,74 +143,99 @@ fi
 echo "Checking installation mode..."
 
 if [ "$BUNDLE_ADDR" == "online" ]; then
-    echo "Running in ONLINE mode, using apt install..."
-    
-    # 2.1 Install dependencies
-    apt-get update && apt-get install -y apt-transport-https ca-certificates curl gpg
-    
-    # 2.2 Configure Kubernetes official repo (pkgs.k8s.io)
-    # Note: apt.kubernetes.io is deprecated
-    K8S_MAJOR_MINOR=$(echo $K8S_VERSION | cut -d. -f1,2)
-    mkdir -p -m 755 /etc/apt/keyrings
-    # Remove old key if exists to avoid conflict
-    rm -f /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-    curl -fsSL "https://pkgs.k8s.io/core:/stable:/$K8S_MAJOR_MINOR/deb/Release.key" | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-    echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/$K8S_MAJOR_MINOR/deb/ /" | tee /etc/apt/sources.list.d/kubernetes.list
+    echo "Running in ONLINE mode, using binary download..."
 
-    # 2.3 Install packages
-    apt-get update
-    # Strip 'v' prefix for apt package version matching
-    PKG_VER=$(echo $K8S_VERSION | sed 's/v//')
-    # Install specific version if possible, or latest matching major.minor
-    # Note: apt version format might differ slightly, usually 1.28.0-1.1
-    # For simplicity in this script, we install the latest patch version of the requested minor version
-    apt-get install -y kubelet kubeadm kubectl containerd
-    apt-mark hold kubelet kubeadm kubectl
+    # Download Kubernetes binaries directly from official releases
+    K8S_MAJOR_MINOR=$(echo $K8S_VERSION | cut -d. -f1,2)
+    K8S_PATCH=$(echo $K8S_VERSION | cut -d. -f3)
+    K8S_DOWNLOAD_URL="https://dl.k8s.io/${K8S_VERSION}/bin/linux/${ARCH}"
+    CRI_TOOLS_VERSION="${K8S_VERSION}"
+    
+    echo "Downloading Kubernetes ${K8S_VERSION} binaries for ${ARCH}..."
+    
+    # Download kubeadm
+    echo "Downloading kubeadm..."
+    curl -fsSL "${K8S_DOWNLOAD_URL}/kubeadm" -o /usr/local/bin/kubeadm
+    chmod +x /usr/local/bin/kubeadm
+    
+    # Download kubectl
+    echo "Downloading kubectl..."
+    curl -fsSL "${K8S_DOWNLOAD_URL}/kubectl" -o /usr/local/bin/kubectl
+    chmod +x /usr/local/bin/kubectl
+    
+    # Download kubelet
+    echo "Downloading kubelet..."
+    curl -fsSL "${K8S_DOWNLOAD_URL}/kubelet" -o /usr/local/bin/kubelet
+    chmod +x /usr/local/bin/kubelet
+    
+    # Download cri-tools (crictl)
+    echo "Downloading cri-tools..."
+    curl -fsSL "https://github.com/kubernetes-sigs/cri-tools/releases/download/${CRI_TOOLS_VERSION}/crictl-${CRI_TOOLS_VERSION}-linux-${ARCH}.tar.gz" -o /tmp/crictl.tar.gz
+    tar -xzf /tmp/crictl.tar.gz -C /tmp
+    mv /tmp/crictl-${CRI_TOOLS_VERSION}-linux-${ARCH}/crictl /usr/local/bin/
+    rm -rf /tmp/crictl.tar.gz /tmp/crictl-${CRI_TOOLS_VERSION}-linux-${ARCH}
+    
+    # Download CNI plugins
+    echo "Downloading CNI plugins..."
+    mkdir -p /opt/cni/bin
+    curl -fsSL "https://github.com/containernetworking/plugins/releases/download/v1.4.0/cni-plugins-linux-${ARCH}-v1.4.0.tgz" -o /tmp/cni-plugins.tgz
+    tar -xzf /tmp/cni-plugins.tgz -C /opt/cni/bin/
+    rm /tmp/cni-plugins.tgz
+    
+    # Download containerd and runc binaries
+    echo "Downloading containerd..."
+    CONTAINERD_VERSION="v1.7.0"
+    CONTAINERD_URL="https://github.com/containerd/containerd/releases/download/${CONTAINERD_VERSION}/containerd-${CONTAINERD_VERSION}-linux-${ARCH}.tar.gz"
+    curl -fsSL "$CONTAINERD_URL" -o /tmp/containerd.tar.gz
+    tar -xzf /tmp/containerd.tar.gz -C /usr/local/
+    rm /tmp/containerd.tar.gz
+    
+    echo "Downloading runc..."
+    RUNC_VERSION="v1.1.10"
+    curl -fsSL "https://github.com/opencontainers/runc/releases/download/${RUNC_VERSION}/runc.${ARCH}" -o /usr/local/bin/runc
+    chmod +x /usr/local/bin/runc
     
     # Create dummy bundle path for subsequent logic compatibility
     mkdir -p $BUNDLE_PATH
     
 else
-    echo "Running in OFFLINE mode, using imgpkg bundle..."
+    echo "Running in OFFLINE mode, using binary bundle..."
     
     echo "Checking for local bundle..."
     mkdir -p $BUNDLE_PATH
 
-    # Check if critical files exist to determine if we can skip download
-    if [ -f "$BUNDLE_PATH/kubeadm.deb" ] && [ -f "$BUNDLE_PATH/containerd.tar" ]; then
-        echo "Local bundle found. Skipping download."
+    # Check if critical binary files exist
+    if [ -f "$BUNDLE_PATH/kubeadm" ] && [ -f "$BUNDLE_PATH/containerd/bin/containerd" ]; then
+        echo "Local binary bundle found. Skipping download."
     else
         echo "Local bundle not found or incomplete. Downloading..."
         imgpkg pull -i $BUNDLE_ADDR -o $BUNDLE_PATH
     fi
     
-    ## adding os configuration (Offline only)
-    if [ -f "$BUNDLE_PATH/conf.tar" ]; then
-        tar -C / -xvf "$BUNDLE_PATH/conf.tar" && sysctl --system 
+    # Extract and install Kubernetes binaries
+    if [ -d "$BUNDLE_PATH/bin" ]; then
+        echo "Installing Kubernetes binaries from bundle..."
+        cp -f $BUNDLE_PATH/bin/* /usr/local/bin/
+        chmod +x /usr/local/bin/*
     fi
-
-    ## installing deb packages (Offline only)
-    if [ -f "$BUNDLE_PATH/kubeadm.deb" ]; then
-        for pkg in cri-tools kubernetes-cni kubectl kubelet kubeadm; do
-            dpkg --install "$BUNDLE_PATH/$pkg.deb" && apt-mark hold $pkg
-        done
+    
+    # Install CNI plugins
+    if [ -d "$BUNDLE_PATH/cni/bin" ]; then
+        echo "Installing CNI plugins from bundle..."
+        mkdir -p /opt/cni/bin
+        cp -f $BUNDLE_PATH/cni/bin/* /opt/cni/bin/
     fi
-
-    ## intalling containerd (Offline only)
-    if [ -f "$BUNDLE_PATH/containerd.tar" ]; then
-        tar -C / -xvf "$BUNDLE_PATH/containerd.tar"
+    
+    # Install containerd
+    if [ -d "$BUNDLE_PATH/containerd" ]; then
+        echo "Installing containerd from bundle..."
+        cp -rf $BUNDLE_PATH/containerd/* /usr/local/
     fi
 fi
 
 ## Pre-flight Check: Swap
 if swapon --show | grep -q .; then
     echo "Error: Swap is enabled. Please disable swap before proceeding."
-    exit 1
-fi
-
-## Pre-flight Check: Apt Lock
-if fuser /var/lib/dpkg/lock >/dev/null 2>&1 || fuser /var/lib/apt/lists/lock >/dev/null 2>&1; then
-    echo "Error: Apt is currently locked by another process. Please wait and try again."
     exit 1
 fi
 
@@ -302,16 +327,24 @@ rm -rf /opt/cni
 rm -rf /opt/containerd
 rm -rf /etc/containerd
 
-## removing containerd files
-tar tf "$BUNDLE_PATH/containerd.tar" | xargs -n 1 echo '/' | sed 's/ //g'  | grep -e '[^/]$' | xargs rm -f || true
+## Removing Kubernetes binaries
+echo "Removing Kubernetes binaries..."
+rm -f /usr/local/bin/kubeadm
+rm -f /usr/local/bin/kubectl
+rm -f /usr/local/bin/kubelet
+rm -f /usr/local/bin/crictl
+rm -f /usr/local/bin/containerd
+rm -f /usr/local/bin/containerd-shim-runc-v2
+rm -f /usr/local/bin/runc
 
-## removing deb packages
-for pkg in kubeadm kubelet kubectl kubernetes-cni cri-tools; do
-	dpkg --purge $pkg || true
-done
+## Removing CNI plugins
+echo "Removing CNI plugins..."
+rm -rf /opt/cni/bin/*
 
 ## removing os configuration
-tar tf "$BUNDLE_PATH/conf.tar" | xargs -n 1 echo '/' | sed 's/ //g' | grep -e "[^/]$" | xargs rm -f || true
+if [ -f "$BUNDLE_PATH/conf.tar" ]; then
+    tar tf "$BUNDLE_PATH/conf.tar" | xargs -n 1 echo '/' | sed 's/ //g' | grep -e "[^/]$" | xargs rm -f || true
+fi
 
 ## remove kernal modules
 modprobe -rq overlay && modprobe -r br_netfilter || true
@@ -331,48 +364,68 @@ set -euox pipefail
 
 BUNDLE_DOWNLOAD_PATH={{.BundleDownloadPath}}
 BUNDLE_ADDR={{.BundleAddrs}}
+ARCH={{.Arch}}
+K8S_VERSION={{.K8sVersion}}
 BUNDLE_PATH=$BUNDLE_DOWNLOAD_PATH/$BUNDLE_ADDR
 
-echo "Checking for local bundle..."
-mkdir -p $BUNDLE_PATH
+echo "Checking upgrade mode..."
 
-if [ -f "$BUNDLE_PATH/kubeadm.deb" ] && [ -f "$BUNDLE_PATH/kubelet.deb" ]; then
-    echo "Local bundle found. Skipping download."
-else
-    echo "Local bundle not found or incomplete. Downloading..."
-    imgpkg pull -i $BUNDLE_ADDR -o $BUNDLE_PATH
-fi
-
-echo "Upgrading kubeadm..."
-dpkg --install "$BUNDLE_PATH/kubeadm.deb"
-apt-mark hold kubeadm
-
-# Determine version from new kubeadm
-NEW_K8S_VERSION=$(kubeadm version -o short)
-
-echo "Applying kubeadm upgrade to $NEW_K8S_VERSION..."
-
-# Check if this is a control plane node (simple check for kube-apiserver manifest)
-if [ -f /etc/kubernetes/manifests/kube-apiserver.yaml ]; then
-    # Control Plane Node
-    # Note: This is a simplified upgrade flow. In HA, only one node runs 'apply', others run 'node'.
-    # For BYOH POC/MVP, we assume 'apply' is safe or handled by the operator orchestration.
-    # Ideally, the operator should tell us if we are the first CP or secondary.
-    # For now, we'll try 'apply' and if it says it's already upgraded, it should be fine?
-    # Actually 'upgrade node' is for worker nodes OR secondary control plane nodes in some flows.
-    # But 'upgrade apply' is for the *first* control plane node.
+if [ "$BUNDLE_ADDR" == "online" ]; then
+    echo "Running in ONLINE mode, upgrading via binary download..."
     
-    # A safer bet for automation without extra flags:
-    # Try 'upgrade apply' non-interactively.
-    kubeadm upgrade apply -y $NEW_K8S_VERSION
-else
-    # Worker Node
-    kubeadm upgrade node
-fi
+    K8S_DOWNLOAD_URL="https://dl.k8s.io/${K8S_VERSION}/bin/linux/${ARCH}"
+    
+    echo "Upgrading kubeadm..."
+    curl -fsSL "${K8S_DOWNLOAD_URL}/kubeadm" -o /usr/local/bin/kubeadm
+    chmod +x /usr/local/bin/kubeadm
+    
+    # Determine version from new kubeadm
+    NEW_K8S_VERSION=$(kubeadm version -o short)
+    
+    echo "Applying kubeadm upgrade to $NEW_K8S_VERSION..."
+    
+    # Check if this is a control plane node (simple check for kube-apiserver manifest)
+    if [ -f /etc/kubernetes/manifests/kube-apiserver.yaml ]; then
+        kubeadm upgrade apply -y $NEW_K8S_VERSION
+    else
+        kubeadm upgrade node
+    fi
+    
+    echo "Upgrading kubelet and kubectl..."
+    curl -fsSL "${K8S_DOWNLOAD_URL}/kubelet" -o /usr/local/bin/kubelet
+    chmod +x /usr/local/bin/kubelet
+    
+    curl -fsSL "${K8S_DOWNLOAD_URL}/kubectl" -o /usr/local/bin/kubectl
+    chmod +x /usr/local/bin/kubectl
 
-echo "Upgrading kubelet and kubectl..."
-dpkg --install "$BUNDLE_PATH/kubelet.deb" "$BUNDLE_PATH/kubectl.deb"
-apt-mark hold kubelet kubectl
+else
+    echo "Running in OFFLINE mode, upgrading via binary bundle..."
+    
+    echo "Checking for local bundle..."
+    mkdir -p $BUNDLE_PATH
+
+    if [ -f "$BUNDLE_PATH/bin/kubeadm" ]; then
+        echo "Upgrading Kubernetes binaries from bundle..."
+        cp -f $BUNDLE_PATH/bin/* /usr/local/bin/
+        chmod +x /usr/local/bin/*
+    else
+        echo "Bundle not found. Downloading..."
+        imgpkg pull -i $BUNDLE_ADDR -o $BUNDLE_PATH
+        cp -f $BUNDLE_PATH/bin/* /usr/local/bin/
+        chmod +x /usr/local/bin/*
+    fi
+    
+    # Determine version from new kubeadm
+    NEW_K8S_VERSION=$(kubeadm version -o short)
+    
+    echo "Applying kubeadm upgrade to $NEW_K8S_VERSION..."
+    
+    if [ -f /etc/kubernetes/manifests/kube-apiserver.yaml ]; then
+        kubeadm upgrade apply -y $NEW_K8S_VERSION
+    else
+        kubeadm upgrade node
+    fi
+fi
 
 echo "Restarting kubelet..."
 systemctl daemon-reload

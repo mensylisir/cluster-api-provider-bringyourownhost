@@ -4,6 +4,8 @@ go 1.20
 
 replace github.com/insomniacslk/dhcp => github.com/harvester/dhcp v0.0.0-20220421024905-28b38eafefe3
 
+replace golang.org/x/tools => golang.org/x/tools v0.16.1
+
 replace golang.org/x/net => golang.org/x/net v0.17.0
 
 require (
@@ -16,6 +18,7 @@ require (
 	github.com/onsi/ginkgo/v2 v2.9.2
 	github.com/onsi/gomega v1.27.5
 	github.com/pkg/errors v0.9.1
+	github.com/prometheus/client_golang v1.14.0
 	github.com/spf13/pflag v1.0.5
 	k8s.io/api v0.26.1
 	k8s.io/apimachinery v0.26.1
@@ -120,7 +123,6 @@ require (
 	github.com/opencontainers/runc v1.1.12 // indirect
 	github.com/pelletier/go-toml v1.9.5 // indirect
 	github.com/pelletier/go-toml/v2 v2.0.6 // indirect
-	github.com/prometheus/client_golang v1.14.0 // indirect
 	github.com/prometheus/client_model v0.3.0 // indirect
 	github.com/prometheus/common v0.37.0 // indirect
 	github.com/prometheus/procfs v0.8.0 // indirect

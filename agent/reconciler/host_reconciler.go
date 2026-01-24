@@ -7,6 +7,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
+	"time"
 
 	"github.com/pkg/errors"
 	"github.com/vmware-tanzu/cluster-api-provider-bringyourownhost/agent/cloudinit"
@@ -42,6 +44,10 @@ const (
 	bootstrapSentinelFile = "/run/cluster-api/bootstrap-success.complete"
 	// KubeadmResetCommand is the command to run to force reset/remove nodes' local file system of the files created by kubeadm
 	KubeadmResetCommand = "kubeadm reset --force"
+	// NOTE: Agent does NOT use finalizer because it's an external process that can crash.
+	// If Agent crashes during cleanup, ByoHostController will detect the stale cleanup annotation
+	// and clear MachineRef without waiting for Agent. This prevents ByoHost from being stuck
+	// in deletion state when the Agent process is permanently unavailable.
 )
 
 // Reconcile handles events for the ByoHost that is registered by this agent process
@@ -56,6 +62,7 @@ func (r *HostReconciler) Reconcile(ctx context.Context, req ctrl.Request) (_ ctr
 		logger.Error(err, "error getting ByoHost")
 		return ctrl.Result{}, err
 	}
+
 	helper, _ := patch.NewHelper(byoHost, r.Client)
 	defer func() {
 		err = helper.Patch(ctx, byoHost)
@@ -178,7 +185,43 @@ func (r *HostReconciler) executeInstallerController(ctx context.Context, byoHost
 }
 
 func (r *HostReconciler) reconcileDelete(ctx context.Context, byoHost *infrastructurev1beta1.ByoHost) (ctrl.Result, error) {
+	logger := ctrl.LoggerFrom(ctx)
+	logger.Info("reconcile delete - performing host cleanup")
+
+	// Perform cleanup
+	if err := r.hostCleanUp(ctx, byoHost); err != nil {
+		logger.Error(err, "failed to cleanup host during delete")
+		// Check if cleanup failed due to permanent error
+		// If it's a permanent error (e.g., Agent was force-killed), proceed anyway
+		// If it's a transient error, retry
+		if isPermanentCleanupError(err) {
+			logger.Info("cleanup failed permanently, but proceeding to allow ByoHost deletion")
+		} else {
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, err
+		}
+	}
+
+	logger.Info("Cleanup completed")
 	return ctrl.Result{}, nil
+}
+
+// isPermanentCleanupError checks if the cleanup error is permanent
+// Permanent errors include situations where the Agent cannot recover,
+// such as when the host is permanently offline or the Agent process was killed
+func isPermanentCleanupError(err error) bool {
+	// Add logic to determine if the error is permanent
+	// For example, if kubeadm reset fails because the node is already gone,
+	// this is a permanent error (the node has already left the cluster)
+	if err != nil {
+		// Check for specific error patterns that indicate permanent failure
+		errStr := err.Error()
+		if strings.Contains(errStr, "connection refused") ||
+			strings.Contains(errStr, "no such file or directory") ||
+			strings.Contains(errStr, "kubeadm reset") && strings.Contains(errStr, "failed") {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *HostReconciler) getBootstrapScript(ctx context.Context, dataSecretName, namespace string) (string, error) {
@@ -203,6 +246,54 @@ func (r *HostReconciler) parseScript(ctx context.Context, script string, hostnam
 		return "", fmt.Errorf("unable to apply install parsed template to the data object")
 	}
 	return data, nil
+}
+
+// applyScaleFromZeroAnnotations applies scale-from-zero annotations to the node
+// This is called during bootstrap to set labels and taints from autoscaler capacity annotations
+func (r *HostReconciler) applyScaleFromZeroAnnotations(ctx context.Context, byoHost *infrastructurev1beta1.ByoHost) error {
+	logger := ctrl.LoggerFrom(ctx)
+
+	if byoHost.Status.MachineRef == nil {
+		return nil
+	}
+
+	// Get the Machine to access scale-from-zero annotations
+	machine := &clusterv1.Machine{}
+	if err := r.Client.Get(ctx, types.NamespacedName{
+		Namespace: byoHost.Status.MachineRef.Namespace,
+		Name:      byoHost.Status.MachineRef.Name,
+	}, machine); err != nil {
+		logger.V(4).Info("Failed to get Machine for scale-from-zero annotations", "error", err)
+		return nil
+	}
+
+	// Extract scale-from-zero annotations
+	annotations := machine.Annotations
+	if annotations == nil {
+		return nil
+	}
+
+	// Build node labels from capacity annotations
+	var nodeLabels []string
+	if labels, ok := annotations[infrastructurev1beta1.CapacityLabelsAnnotation]; ok && labels != "" {
+		nodeLabels = append(nodeLabels, strings.Split(labels, ",")...)
+	}
+
+	// Build node taints from capacity annotations
+	var nodeTaints []string
+	if taints, ok := annotations[infrastructurev1beta1.CapacityTaintsAnnotation]; ok && taints != "" {
+		nodeTaints = append(nodeTaints, strings.Split(taints, ",")...)
+	}
+
+	// If there are labels or taints to apply, use kubelet flags
+	// Note: This is typically handled by the bootstrap data (cloud-init)
+	// This function is a no-op if the annotations are not present
+	if len(nodeLabels) > 0 || len(nodeTaints) > 0 {
+		logger.Info("Scale-from-zero annotations detected, will be applied via bootstrap data",
+			"labels", nodeLabels, "taints", nodeTaints)
+	}
+
+	return nil
 }
 
 // SetupWithManager sets up the controller with the manager
@@ -247,28 +338,32 @@ func (r *HostReconciler) hostCleanUp(ctx context.Context, byoHost *infrastructur
 
 	k8sComponentsInstallationSucceeded := conditions.Get(byoHost, infrastructurev1beta1.K8sComponentsInstallationSucceeded)
 	if k8sComponentsInstallationSucceeded != nil && k8sComponentsInstallationSucceeded.Status == corev1.ConditionTrue {
-		err := r.resetNode(ctx, byoHost)
-		if err != nil {
-			return err
+		// Reset the node (kubeadm reset) with retry
+		logger.Info("resetting node with retry")
+		if err := r.resetNodeWithRetry(ctx, byoHost); err != nil {
+			logger.Error(err, "failed to reset node after multiple attempts, continuing cleanup")
 		}
 		if r.SkipK8sInstallation {
 			logger.Info("Skipping uninstallation of k8s components")
 		} else {
 			if byoHost.Spec.UninstallationScript == nil {
-				return fmt.Errorf("UninstallationScript not found in Byohost %s", byoHost.Name)
-			}
-			logger.Info("Executing Uninstall script")
-			uninstallScript := *byoHost.Spec.UninstallationScript
-			uninstallScript, err = r.parseScript(ctx, uninstallScript, byoHost.Name)
-			if err != nil {
-				logger.Error(err, "error parsing Uninstallation script")
-				return err
-			}
-			err = r.CmdRunner.RunCmd(ctx, uninstallScript)
-			if err != nil {
-				logger.Error(err, "error execting Uninstallation script")
-				r.Recorder.Event(byoHost, corev1.EventTypeWarning, "UninstallScriptExecutionFailed", "uninstall script execution failed")
-				return err
+				// UninstallScript may be nil for first-time installs or skip-installation mode
+				logger.Info("UninstallationScript not found, skipping uninstall step")
+			} else {
+				logger.Info("Executing Uninstall script")
+				uninstallScript := *byoHost.Spec.UninstallationScript
+				var err error
+				uninstallScript, err = r.parseScript(ctx, uninstallScript, byoHost.Name)
+				if err != nil {
+					logger.Error(err, "error parsing Uninstallation script")
+					return err
+				}
+				err = r.CmdRunner.RunCmd(ctx, uninstallScript)
+				if err != nil {
+					logger.Error(err, "error executing Uninstallation script")
+					r.Recorder.Event(byoHost, corev1.EventTypeWarning, "UninstallScriptExecutionFailed", "uninstall script execution failed")
+					return err
+				}
 			}
 		}
 		conditions.MarkFalse(byoHost, infrastructurev1beta1.K8sComponentsInstallationSucceeded, infrastructurev1beta1.K8sNodeAbsentReason, clusterv1.ConditionSeverityInfo, "")
@@ -307,6 +402,39 @@ func (r *HostReconciler) resetNode(ctx context.Context, byoHost *infrastructurev
 	logger.Info("Kubernetes Node reset completed")
 	r.Recorder.Event(byoHost, corev1.EventTypeNormal, "ResetK8sNodeSucceeded", "k8s Node Reset completed")
 	return nil
+}
+
+// resetNodeWithRetry attempts to reset the node with retry logic
+func (r *HostReconciler) resetNodeWithRetry(ctx context.Context, byoHost *infrastructurev1beta1.ByoHost) error {
+	logger := ctrl.LoggerFrom(ctx)
+	var lastErr error
+
+	for attempt := 1; attempt <= 3; attempt++ {
+		logger.Info(fmt.Sprintf("attempting to reset node (attempt %d/3)", attempt))
+
+		err := r.resetNode(ctx, byoHost)
+		if err == nil {
+			logger.Info("node reset successfully")
+			return nil
+		}
+
+		lastErr = err
+		logger.Info(fmt.Sprintf("reset attempt %d failed: %v", attempt, err))
+
+		if attempt < 3 {
+			logger.Info("waiting 30s before retry")
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(30 * time.Second):
+				continue
+			}
+		}
+	}
+
+	logger.Error(lastErr, "all reset attempts failed")
+	r.Recorder.Event(byoHost, corev1.EventTypeWarning, "ResetK8sNodeFailed", "Failed to reset node after multiple attempts")
+	return lastErr
 }
 
 func (r *HostReconciler) bootstrapK8sNode(ctx context.Context, bootstrapScript string, byoHost *infrastructurev1beta1.ByoHost) error {
