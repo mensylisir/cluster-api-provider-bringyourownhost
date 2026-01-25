@@ -9,8 +9,8 @@ WORKDIR /workspace
 COPY go.mod go.mod
 COPY go.sum go.sum
 # cache deps before building and copying source so that we don't need to re-download as much
-RUN go env -w GOPROXY=https://goproxy.cn,direct
-RUN go mod download
+# Use GODEBUG to disable IPv6 to avoid DNS resolution issues
+RUN GODEBUG=netdns=go go mod download
 
 # Copy the go source
 COPY main.go main.go
