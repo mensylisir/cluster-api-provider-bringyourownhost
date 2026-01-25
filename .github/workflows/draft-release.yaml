@@ -29,7 +29,7 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build Release Artifacts
-            run IMG="docker.io/mensyli/cluster-api-byoh-controller:${{ github.ref_name }}" make build-release-artifacts
+        run: IMG="docker.io/mensyli/cluster-api-byoh-controller:${{ github.ref_name }}" make build-release-artifacts
 
       - name: Publish Release
         uses: softprops/action-gh-release@v1
