@@ -39,5 +39,7 @@ _artifacts
 # Tilt tmp files
 .tiltbuild/
 
+.sisyphus/
+
 # macOS Desktop Service Store files
 .DS_Store

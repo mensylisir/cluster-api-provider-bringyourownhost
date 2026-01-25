@@ -2,7 +2,8 @@
 SHELL:=/usr/bin/env bash
 
 # Define registries
-STAGING_REGISTRY ?= gcr.io/k8s-staging-cluster-api
+# STAGING_REGISTRY ?= gcr.io/k8s-staging-cluster-api
+STAGING_REGISTRY ?= docker.io/mensyli
 
 IMAGE_NAME ?= cluster-api-byoh-controller
 TAG ?= dev
@@ -56,6 +57,7 @@ SHELL = /usr/bin/env bash -o pipefail
 all: build
 
 HOST_AGENT_DIR ?= agent
+RELEASE_BINARY := byoh-hostagent
 
 ##@ General
 
@@ -115,6 +117,7 @@ docker-build: ## Build docker image with the manager.
 
 docker-buildx: ## Build multi-architecture docker image with the manager using buildx.
 	docker buildx build \
+	    --network=host \
 		--platform linux/amd64,linux/arm64 \
 		--tag ${IMG} \
 		--tag ${IMG_LATEST} \
@@ -259,14 +262,13 @@ build-cluster-templates: $(RELEASE_DIR) cluster-templates
 
 
 build-infra-yaml:kustomize ## Generate infrastructure-components.yaml for the provider
-	cd config/manager && $(KUSTOMIZE) edit set image gcr.io/k8s-staging-cluster-api/cluster-api-byoh-controller=${IMG}
-	$(KUSTOMIZE) build config/default > $(RELEASE_DIR)/infrastructure-components.yaml
+	$(KUSTOMIZE) build config/default | sed -e 's|gcr.io/k8s-staging-cluster-api/cluster-api-byoh-controller:dev|$(IMG)|g' > $(RELEASE_DIR)/infrastructure-components.yaml
 
 build-metadata-yaml:
 	cp metadata.yaml $(RELEASE_DIR)/metadata.yaml
 
 build-host-agent-binary: host-agent-binaries
-	cp bin/byoh-hostagent-linux-amd64 $(RELEASE_DIR)/byoh-hostagent-linux-amd64
+	cp bin/$(RELEASE_BINARY)-linux-* $(RELEASE_DIR)/
 
 
 # go-get-tool will 'go get' any package $2 and install it to $1.

@@ -1,0 +1,5 @@
+[worker.oci]
+  [worker.oci.proxy]
+    httpProxy = "http://192.168.31.34:10808"
+    httpsProxy = "http://192.168.31.34:10808"
+    noProxy = "localhost,127.0.0.1,192.168.31.0/24,172.17.0.0/16,172.18.0.0/16"
