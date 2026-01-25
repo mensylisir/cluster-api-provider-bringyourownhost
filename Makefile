@@ -262,7 +262,7 @@ build-cluster-templates: $(RELEASE_DIR) cluster-templates
 
 
 build-infra-yaml:kustomize ## Generate infrastructure-components.yaml for the provider
-	$(KUSTOMIZE) build config/default | sed -e 's|gcr.io/k8s-staging-cluster-api/cluster-api-byoh-controller:dev|$(IMG)|g' > $(RELEASE_DIR)/infrastructure-components.yaml
+	$(KUSTOMIZE) build config/default | sed -e 's|image: .*/cluster-api-byoh-controller:.*|image: $(IMG)|g' > $(RELEASE_DIR)/infrastructure-components.yaml
 
 build-metadata-yaml:
 	cp metadata.yaml $(RELEASE_DIR)/metadata.yaml
