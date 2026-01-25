@@ -28,6 +28,9 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Build and Push Docker Image
+        run: make docker-buildx IMG=docker.io/mensyli/cluster-api-byoh-controller:${{ github.ref_name }}
+
       - name: Build Release Artifacts
         run: IMG="docker.io/mensyli/cluster-api-byoh-controller:${{ github.ref_name }}" make build-release-artifacts
 
