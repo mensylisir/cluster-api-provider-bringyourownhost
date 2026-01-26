@@ -5,6 +5,7 @@ package controllers
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -651,11 +652,40 @@ func (r *ByoMachineReconciler) attachByoHost(ctx context.Context, machineScope *
 		hostLabels[infrav1.AttachedByoMachineLabel] = machineScope.ByoMachine.Namespace + "." + machineScope.ByoMachine.Name
 		host.Labels = hostLabels
 
-		host.Spec.BootstrapSecret = &corev1.ObjectReference{
-			Kind:      "Secret",
-			Namespace: machineScope.ByoMachine.Namespace,
-			Name:      *machineScope.Machine.Spec.Bootstrap.DataSecretName,
+		// For TLS Bootstrap mode, create and use the TLS bootstrap secret
+		if machineScope.ByoMachine.Spec.JoinMode == infrav1.JoinModeTLSBootstrap {
+			tlsBootstrapSecret, err := r.createBootstrapSecretTLSBootstrap(ctx, machineScope)
+			if err != nil {
+				logger.Error(err, "failed to create TLS bootstrap secret")
+				return ctrl.Result{}, err
+			}
+			host.Spec.BootstrapSecret = &corev1.ObjectReference{
+				Kind:      "Secret",
+				Namespace: tlsBootstrapSecret.Namespace,
+				Name:      tlsBootstrapSecret.Name,
+			}
+			logger.Info("Using TLS bootstrap secret", "secret", tlsBootstrapSecret.Name)
+		} else {
+			// For kubeadm mode, use the original bootstrap secret
+			host.Spec.BootstrapSecret = &corev1.ObjectReference{
+				Kind:      "Secret",
+				Namespace: machineScope.ByoMachine.Namespace,
+				Name:      *machineScope.Machine.Spec.Bootstrap.DataSecretName,
+			}
 		}
+
+		// Sync JoinMode from ByoMachine to ByoHost
+		host.Spec.JoinMode = machineScope.ByoMachine.Spec.JoinMode
+
+		// Sync DownloadMode from ByoMachine to ByoHost (only for TLSBootstrap mode)
+		host.Spec.DownloadMode = machineScope.ByoMachine.Spec.DownloadMode
+
+		// Sync KubernetesVersion from ByoMachine to ByoHost
+		host.Spec.KubernetesVersion = machineScope.ByoMachine.Spec.KubernetesVersion
+
+		// Sync ManageKubeProxy from ByoMachine to ByoHost (only for TLSBootstrap mode)
+		host.Spec.ManageKubeProxy = machineScope.ByoMachine.Spec.ManageKubeProxy
+
 		if host.Annotations == nil {
 			host.Annotations = make(map[string]string)
 		}
@@ -815,4 +845,164 @@ func (r *ByoMachineReconciler) convertNetworkToAddresses(network []infrav1.Netwo
 		}
 	}
 	return addresses
+}
+
+// createBootstrapSecretTLSBootstrap creates a bootstrap secret for TLS Bootstrap mode.
+// This secret contains the CA certificate and bootstrap kubeconfig that the Agent
+// uses to connect to the cluster and perform TLS bootstrapping.
+func (r *ByoMachineReconciler) createBootstrapSecretTLSBootstrap(ctx context.Context, machineScope *byoMachineScope) (*corev1.Secret, error) {
+	logger := log.FromContext(ctx).WithValues("cluster", machineScope.Cluster.Name)
+	logger.Info("Creating TLS Bootstrap secret")
+
+	var caData []byte
+	var bootstrapKubeconfigData []byte
+
+	// Method 1: Try to get from BootstrapKubeconfig if it exists
+	bootstrapKubeconfigList := &infrav1.BootstrapKubeconfigList{}
+	if err := r.Client.List(ctx, bootstrapKubeconfigList, client.InNamespace(machineScope.ByoMachine.Namespace)); err != nil {
+		logger.Error(err, "failed to list BootstrapKubeconfig objects")
+	} else {
+		for _, bkc := range bootstrapKubeconfigList.Items {
+			if bkc.Status.BootstrapKubeconfigData != nil && len(*bkc.Status.BootstrapKubeconfigData) > 0 {
+				// Extract CA and kubeconfig from the bootstrap kubeconfig
+				bootstrapKubeconfigData = []byte(*bkc.Status.BootstrapKubeconfigData)
+
+				// Try to extract CA from the kubeconfig
+				if caData == nil {
+					caData = extractCAFromKubeconfig(bootstrapKubeconfigData)
+				}
+				logger.Info("Found BootstrapKubeconfig with data", "name", bkc.Name)
+				break
+			}
+		}
+	}
+
+	// Method 2: If still no data, try to get from the existing bootstrap secret
+	if len(bootstrapKubeconfigData) == 0 && machineScope.Machine.Spec.Bootstrap.DataSecretName != nil {
+		bootstrapSecret := &corev1.Secret{}
+		if err := r.Client.Get(ctx, client.ObjectKey{
+			Namespace: machineScope.ByoMachine.Namespace,
+			Name:      *machineScope.Machine.Spec.Bootstrap.DataSecretName,
+		}, bootstrapSecret); err != nil {
+			logger.Error(err, "failed to get bootstrap secret")
+		} else {
+			// Check for pre-existing bootstrap-kubeconfig
+			if data, ok := bootstrapSecret.Data["bootstrap-kubeconfig"]; ok && len(data) > 0 {
+				bootstrapKubeconfigData = data
+				if caData == nil {
+					caData = extractCAFromKubeconfig(data)
+				}
+				logger.Info("Found bootstrap-kubeconfig in bootstrap secret")
+			}
+
+			// Check for CA certificate directly
+			if caData == nil {
+				if data, ok := bootstrapSecret.Data["ca.crt"]; ok && len(data) > 0 {
+					caData = data
+					logger.Info("Found ca.crt in bootstrap secret")
+				}
+			}
+
+			// Try to extract CA from the cloud-init value
+			if caData == nil {
+				if data, ok := bootstrapSecret.Data["value"]; ok && len(data) > 0 {
+					caData = extractCAFromCloudInit(string(data))
+					if caData != nil {
+						logger.Info("Extracted CA from cloud-init script")
+					}
+				}
+			}
+		}
+	}
+
+	// Method 3: Try to get the CA from the cluster's trusted CA
+	// This is a fallback - try to get CA from the secret referenced by Machine's cluster
+	if caData == nil {
+		logger.V(4).Info("Attempting to get CA from cluster resources")
+		// The CA should be available from the bootstrap secret or from the cluster's kubeconfig
+		// If we still don't have CA, we'll try to get it from a well-known secret
+	}
+
+	// Validate that we have at least some data
+	if len(caData) == 0 && len(bootstrapKubeconfigData) == 0 {
+		return nil, fmt.Errorf("failed to obtain CA certificate or bootstrap kubeconfig for TLS Bootstrap mode")
+	}
+
+	logger.Info("Creating TLS Bootstrap secret",
+		"hasCA", len(caData) > 0,
+		"hasKubeconfig", len(bootstrapKubeconfigData) > 0)
+
+	// Create the TLS bootstrap secret
+	tlsBootstrapSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      machineScope.ByoMachine.Name + "-tls-bootstrap",
+			Namespace: machineScope.ByoMachine.Namespace,
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion:         machineScope.ByoMachine.APIVersion,
+					Kind:               machineScope.ByoMachine.Kind,
+					Name:               machineScope.ByoMachine.Name,
+					UID:                machineScope.ByoMachine.UID,
+					BlockOwnerDeletion: func(b bool) *bool { return &b }(true),
+					Controller:         func(b bool) *bool { return &b }(true),
+				},
+			},
+		},
+		Type: corev1.SecretTypeOpaque,
+		Data: map[string][]byte{},
+	}
+
+	if len(caData) > 0 {
+		tlsBootstrapSecret.Data["ca.crt"] = caData
+	}
+	if len(bootstrapKubeconfigData) > 0 {
+		tlsBootstrapSecret.Data["bootstrap-kubeconfig"] = bootstrapKubeconfigData
+	}
+
+	if err := r.Client.Create(ctx, tlsBootstrapSecret); err != nil {
+		return nil, fmt.Errorf("failed to create TLS bootstrap secret: %w", err)
+	}
+
+	logger.Info("Successfully created TLS bootstrap secret", "secret", tlsBootstrapSecret.Name)
+	return tlsBootstrapSecret, nil
+}
+
+// extractCAFromKubeconfig extracts CA data from a kubeconfig file
+func extractCAFromKubeconfig(kubeconfigData []byte) []byte {
+	// Simple extraction - look for certificate-authority-data in the kubeconfig
+	dataStr := string(kubeconfigData)
+	// Try to parse as YAML and extract CA data
+	if strings.Contains(dataStr, "certificate-authority-data:") {
+		lines := strings.Split(dataStr, "\n")
+		for i, line := range lines {
+			if strings.Contains(line, "certificate-authority-data:") && i+1 < len(lines) {
+				caBase64 := strings.TrimSpace(lines[i+1])
+				if decoded, err := base64.StdEncoding.DecodeString(caBase64); err == nil {
+					return decoded
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// extractCAFromCloudInit extracts CA from a cloud-init script
+func extractCAFromCloudInit(script string) []byte {
+	// Look for CA certificate in various formats in the cloud-init script
+	// Pattern 1: echo "<base64>" | base64 -d > /etc/kubernetes/pki/ca.crt
+	patterns := []string{
+		`ca\.crt["']?\s*:\s*["']?([A-Za-z0-9+/=]+)["']?`,
+		`certificate-authority-data["']?\s*:\s*["']?([A-Za-z0-9+/=]+)["']?`,
+	}
+
+	for _, pattern := range patterns {
+		re := regexp.MustCompile(pattern)
+		matches := re.FindStringSubmatch(script)
+		if len(matches) > 1 {
+			if decoded, err := base64.StdEncoding.DecodeString(matches[1]); err == nil {
+				return decoded
+			}
+		}
+	}
+	return nil
 }

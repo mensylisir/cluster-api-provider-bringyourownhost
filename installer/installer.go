@@ -78,3 +78,11 @@ func NewInstaller(ctx context.Context, osDist, arch, k8sVersion string, download
 
 	return algo.NewUbuntu20_04Installer(ctx, arch, addrs, k8sVersion, nil)
 }
+
+// NewKubexmInstaller creates a new installer for kubexm (TLS Bootstrap) mode
+// This installer is used when JoinMode is "tlsBootstrap" and installs
+// Kubernetes binaries directly without using kubeadm
+func NewKubexmInstaller(ctx context.Context, osDist, arch, k8sVersion, downloadMode string, proxyConfig map[string]string) (K8sInstaller, error) {
+	// Create kubexm installer - OS-agnostic for now, can be made OS-specific later
+	return algo.NewKubexmInstaller(ctx, arch, k8sVersion, downloadMode, proxyConfig)
+}

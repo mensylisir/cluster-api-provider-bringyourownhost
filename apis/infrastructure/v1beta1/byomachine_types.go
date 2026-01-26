@@ -62,6 +62,33 @@ type ByoMachineSpec struct {
 	// the details of InstallationSecret to be used to install BYOH Bundle.
 	// +optional
 	InstallerRef *corev1.ObjectReference `json:"installerRef,omitempty"`
+
+	// JoinMode defines how the node joins the cluster.
+	// - kubeadm: Use kubeadm join command (default)
+	// - tlsBootstrap: Use TLS Bootstrapping mechanism
+	// +kubebuilder:validation:Enum=kubeadm;tlsBootstrap
+	// +optional
+	JoinMode JoinMode `json:"joinMode,omitempty"`
+
+	// DownloadMode defines how to obtain K8s binaries.
+	// Only valid when JoinMode is tlsBootstrap.
+	// - offline: Use locally existing binaries
+	// - online: Download binaries from the network
+	// +kubebuilder:validation:Enum=offline;online
+	// +optional
+	DownloadMode DownloadMode `json:"downloadMode,omitempty"`
+
+	// KubernetesVersion is the K8s version for binaries (only for TLSBootstrap mode).
+	// If not specified, it will be derived from the Machine or Cluster spec.
+	// +optional
+	KubernetesVersion string `json:"kubernetesVersion,omitempty"`
+
+	// ManageKubeProxy determines whether Agent manages kube-proxy.
+	// Only valid when JoinMode is tlsBootstrap.
+	// - false: kube-proxy runs as DaemonSet (cloud native approach)
+	// - true: Agent starts kube-proxy binary (binary deployment approach)
+	// +optional
+	ManageKubeProxy bool `json:"manageKubeProxy,omitempty"`
 }
 
 // NetworkStatus provides information about one of a VM's networks.

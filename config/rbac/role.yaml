@@ -41,6 +41,14 @@ rules:
   verbs:
   - approve
 - apiGroups:
+  - certificates.k8s.io
+  resourceNames:
+  - kubernetes.io/kubelet-serving
+  resources:
+  - signers
+  verbs:
+  - approve
+- apiGroups:
   - cluster.x-k8s.io
   resources:
   - clusters

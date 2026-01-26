@@ -41,6 +41,16 @@ spec:
             spec:
               description: ByoMachineSpec defines the desired state of ByoMachine
               properties:
+                downloadMode:
+                  description: |-
+                    DownloadMode defines how to obtain K8s binaries.
+                    Only valid when JoinMode is tlsBootstrap.
+                    - offline: Use locally existing binaries
+                    - online: Download binaries from the network
+                  enum:
+                    - offline
+                    - online
+                  type: string
                 installerRef:
                   description: |-
                     InstallerRef is an optional reference to a installer-specific resource that holds
@@ -86,6 +96,27 @@ spec:
                       type: string
                   type: object
                   x-kubernetes-map-type: atomic
+                joinMode:
+                  description: |-
+                    JoinMode defines how the node joins the cluster.
+                    - kubeadm: Use kubeadm join command (default)
+                    - tlsBootstrap: Use TLS Bootstrapping mechanism
+                  enum:
+                    - kubeadm
+                    - tlsBootstrap
+                  type: string
+                kubernetesVersion:
+                  description: |-
+                    KubernetesVersion is the K8s version for binaries (only for TLSBootstrap mode).
+                    If not specified, it will be derived from the Machine or Cluster spec.
+                  type: string
+                manageKubeProxy:
+                  description: |-
+                    ManageKubeProxy determines whether Agent manages kube-proxy.
+                    Only valid when JoinMode is tlsBootstrap.
+                    - false: kube-proxy runs as DaemonSet (cloud native approach)
+                    - true: Agent starts kube-proxy binary (binary deployment approach)
+                  type: boolean
                 providerID:
                   type: string
                 selector:

@@ -27,8 +27,9 @@ type ByoAdmissionReconciler struct {
 //+kubebuilder:rbac:groups=certificates.k8s.io,resources=certificatesigningrequests,verbs=create;get;list;watch
 //+kubebuilder:rbac:groups=certificates.k8s.io,resources=certificatesigningrequests/approval,verbs=update
 //+kubebuilder:rbac:groups=certificates.k8s.io,resources=signers,resourceNames=kubernetes.io/kube-apiserver-client,verbs=approve
+//+kubebuilder:rbac:groups=certificates.k8s.io,resources=signers,resourceNames=kubernetes.io/kubelet-serving,verbs=approve
 
-// Reconcile continuosuly checks for CSRs and approves them
+// Reconcile continuously checks for CSRs and approves them
 func (r *ByoAdmissionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var err error
 	logger := log.FromContext(ctx)
@@ -57,6 +58,26 @@ func (r *ByoAdmissionReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, nil
 	}
 
+	// Approve CSR based on signer type
+	switch csr.Spec.SignerName {
+	case certv1.KubeAPIServerClientSignerName:
+		// Approve BYOH client certificates (byoh-csr-* format)
+		if !strings.HasPrefix(csr.Name, "byoh-csr-") {
+			logger.V(4).Info("Skipping non-BYOH client CSR", "CSR", csr.Name)
+			return ctrl.Result{}, nil
+		}
+		logger.Info("Approving BYOH client CSR", "CSR", csr.Name)
+
+	case certv1.KubeletServingSignerName:
+		// Approve kubelet serving certificates
+		// Kubelet creates this CSR when using TLS Bootstrap mode
+		logger.Info("Approving kubelet serving CSR", "CSR", csr.Name)
+
+	default:
+		logger.V(4).Info("Skipping CSR with unknown signer", "CSR", csr.Name, "signer", csr.Spec.SignerName)
+		return ctrl.Result{}, nil
+	}
+
 	// Update the CSR to the "Approved" condition
 	csr.Status.Conditions = append(csr.Status.Conditions, certv1.CertificateSigningRequestCondition{
 		Type:   certv1.CertificateApproved,
@@ -65,7 +86,6 @@ func (r *ByoAdmissionReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	})
 
 	// Approve the CSR
-	logger.Info("Approving CSR", "object", req.NamespacedName)
 	_, err = r.ClientSet.CertificatesV1().CertificateSigningRequests().UpdateApproval(ctx, csr.Name, csr, metav1.UpdateOptions{})
 	if err != nil {
 		return reconcile.Result{}, err
@@ -90,13 +110,28 @@ func checkCSRCondition(conditions []certv1.CertificateSigningRequestCondition, c
 func (r *ByoAdmissionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&certv1.CertificateSigningRequest{}).WithEventFilter(
-		// watch only BYOH created CSRs
+		// Watch for BYOH client CSRs (byoh-csr-*) AND kubelet serving CSRs
 		predicate.Funcs{
 			CreateFunc: func(e event.CreateEvent) bool {
-				return strings.HasPrefix(e.Object.GetName(), "byoh-csr-")
+				csrName := e.Object.GetName()
+				csr, ok := e.Object.(*certv1.CertificateSigningRequest)
+				if !ok {
+					return false
+				}
+				// Accept BYOH client CSRs or kubelet serving CSRs
+				return strings.HasPrefix(csrName, "byoh-csr-") ||
+					csr.Spec.SignerName == certv1.KubeletServingSignerName
 			},
 			UpdateFunc: func(e event.UpdateEvent) bool {
-				return strings.HasPrefix(e.ObjectOld.GetName(), "byoh-csr-")
-			}}).
+				csrName := e.ObjectNew.GetName()
+				csr, ok := e.ObjectNew.(*certv1.CertificateSigningRequest)
+				if !ok {
+					return false
+				}
+				// Accept BYOH client CSRs or kubelet serving CSRs
+				return strings.HasPrefix(csrName, "byoh-csr-") ||
+					csr.Spec.SignerName == certv1.KubeletServingSignerName
+			},
+		}).
 		Complete(r)
 }

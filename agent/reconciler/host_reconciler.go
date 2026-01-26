@@ -423,10 +423,12 @@ func (r *HostReconciler) resetNodeWithRetry(ctx context.Context, byoHost *infras
 
 		if attempt < 3 {
 			logger.Info("waiting 30s before retry")
+			timer := time.NewTimer(30 * time.Second)
 			select {
 			case <-ctx.Done():
+				timer.Stop()
 				return ctx.Err()
-			case <-time.After(30 * time.Second):
+			case <-timer.C:
 				continue
 			}
 		}
@@ -440,12 +442,135 @@ func (r *HostReconciler) resetNodeWithRetry(ctx context.Context, byoHost *infras
 func (r *HostReconciler) bootstrapK8sNode(ctx context.Context, bootstrapScript string, byoHost *infrastructurev1beta1.ByoHost) error {
 	logger := ctrl.LoggerFrom(ctx)
 	logger.Info("Bootstraping k8s Node")
+
+	// Check if TLS Bootstrap mode is enabled
+	if byoHost.Spec.JoinMode == infrastructurev1beta1.JoinModeTLSBootstrap {
+		return r.bootstrapK8sNodeTLS(ctx, byoHost)
+	}
+
 	return cloudinit.ScriptExecutor{
 		WriteFilesExecutor:    r.FileWriter,
 		RunCmdExecutor:        r.CmdRunner,
 		ParseTemplateExecutor: r.TemplateParser,
 		Hostname:              byoHost.Name,
 	}.Execute(bootstrapScript)
+}
+
+// bootstrapK8sNodeTLS performs TLS Bootstrap mode node bootstrapping.
+// This function:
+// 1. Reads the TLS bootstrap secret containing CA cert and bootstrap kubeconfig
+// 2. Writes the necessary configuration files to the host
+// 3. Starts kubelet with TLS bootstrap configuration
+// 4. Optionally starts kube-proxy if ManageKubeProxy is true
+func (r *HostReconciler) bootstrapK8sNodeTLS(ctx context.Context, byoHost *infrastructurev1beta1.ByoHost) error {
+	logger := ctrl.LoggerFrom(ctx)
+	logger.Info("Bootstrapping k8s Node using TLS Bootstrap mode")
+
+	// Read the TLS bootstrap secret
+	if byoHost.Spec.BootstrapSecret == nil {
+		return fmt.Errorf("bootstrap secret is required for TLS Bootstrap mode")
+	}
+
+	secret := &corev1.Secret{}
+	if err := r.Client.Get(ctx, types.NamespacedName{
+		Name:      byoHost.Spec.BootstrapSecret.Name,
+		Namespace: byoHost.Spec.BootstrapSecret.Namespace,
+	}, secret); err != nil {
+		return fmt.Errorf("failed to get TLS bootstrap secret: %w", err)
+	}
+
+	// Write CA certificate
+	if caCrt, ok := secret.Data["ca.crt"]; ok {
+		caPath := "/etc/kubernetes/pki/ca.crt"
+		if err := r.FileWriter.WriteToFile(&cloudinit.Files{
+			Path:        caPath,
+			Content:     string(caCrt),
+			Permissions: "0644",
+		}); err != nil {
+			return fmt.Errorf("failed to write CA certificate: %w", err)
+		}
+		logger.Info("Wrote CA certificate", "path", caPath)
+	}
+
+	// Write bootstrap kubeconfig
+	if bootstrapKubeconfig, ok := secret.Data["bootstrap-kubeconfig"]; ok {
+		bootstrapKubeconfigPath := "/etc/kubernetes/bootstrap-kubeconfig"
+		if err := r.FileWriter.WriteToFile(&cloudinit.Files{
+			Path:        bootstrapKubeconfigPath,
+			Content:     string(bootstrapKubeconfig),
+			Permissions: "0600",
+		}); err != nil {
+			return fmt.Errorf("failed to write bootstrap kubeconfig: %w", err)
+		}
+		logger.Info("Wrote bootstrap kubeconfig", "path", bootstrapKubeconfigPath)
+	}
+
+	// Write kubelet configuration if provided
+	if kubeletConfig, ok := secret.Data["kubelet-config.yaml"]; ok {
+		kubeletConfigPath := "/var/lib/kubelet/config.yaml"
+		if err := r.FileWriter.WriteToFile(&cloudinit.Files{
+			Path:        kubeletConfigPath,
+			Content:     string(kubeletConfig),
+			Permissions: "0644",
+		}); err != nil {
+			return fmt.Errorf("failed to write kubelet config: %w", err)
+		}
+		logger.Info("Wrote kubelet config", "path", kubeletConfigPath)
+	}
+
+	// Write kube-proxy configuration if provided and ManageKubeProxy is true
+	if byoHost.Spec.ManageKubeProxy {
+		if kubeProxyConfig, ok := secret.Data["kube-proxy.kubeconfig"]; ok {
+			kubeProxyConfigPath := "/etc/kubernetes/kube-proxy.kubeconfig"
+			if err := r.FileWriter.WriteToFile(&cloudinit.Files{
+				Path:        kubeProxyConfigPath,
+				Content:     string(kubeProxyConfig),
+				Permissions: "0600",
+			}); err != nil {
+				return fmt.Errorf("failed to write kube-proxy kubeconfig: %w", err)
+			}
+			logger.Info("Wrote kube-proxy kubeconfig", "path", kubeProxyConfigPath)
+		}
+	}
+
+	// Start kubelet with TLS bootstrap configuration
+	kubeletArgs := []string{
+		"--bootstrap-kubeconfig=/etc/kubernetes/bootstrap-kubeconfig",
+		"--kubeconfig=/etc/kubernetes/kubelet.conf",
+		"--cert-dir=/var/lib/kubelet/pki",
+		"--rotate-certificates=true",
+		"--rotate-server-certificates=true",
+		"--pod-manifest-path=/etc/kubernetes/manifests",
+		// Inject provider-id for Cluster Autoscaler compatibility
+		// This matches the behavior in Kubeadm mode (cloudinit interceptor)
+		fmt.Sprintf("--provider-id=byoh://%s", byoHost.Name),
+	}
+
+	// Add cluster DNS configuration from annotations if available
+	if endpointIP, ok := byoHost.Annotations[infrastructurev1beta1.EndPointIPAnnotation]; ok {
+		kubeletArgs = append(kubeletArgs, fmt.Sprintf("--cluster-dns=%s", endpointIP))
+	}
+
+	// Start kubelet
+	kubeletCmd := fmt.Sprintf("kubelet %s", strings.Join(kubeletArgs, " "))
+	logger.Info("Starting kubelet", "command", kubeletCmd)
+
+	if err := r.CmdRunner.RunCmd(ctx, kubeletCmd); err != nil {
+		return fmt.Errorf("failed to start kubelet: %w", err)
+	}
+
+	// Start kube-proxy if ManageKubeProxy is true
+	if byoHost.Spec.ManageKubeProxy {
+		kubeProxyCmd := "kube-proxy --config=/etc/kubernetes/kube-proxy-config.yaml"
+		logger.Info("Starting kube-proxy", "command", kubeProxyCmd)
+
+		if err := r.CmdRunner.RunCmd(ctx, kubeProxyCmd); err != nil {
+			return fmt.Errorf("failed to start kube-proxy: %w", err)
+		}
+	}
+
+	logger.Info("Successfully bootstrapped k8s node using TLS Bootstrap mode")
+	return nil
 }
 
 func (r *HostReconciler) removeSentinelFile(ctx context.Context, byoHost *infrastructurev1beta1.ByoHost) error {

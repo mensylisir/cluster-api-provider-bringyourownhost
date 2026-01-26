@@ -6,6 +6,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
@@ -148,11 +149,46 @@ func (r *K8sInstallerConfigReconciler) reconcileNormal(ctx context.Context, scop
 	logger.Info("Reconciling K8sInstallerConfig")
 
 	k8sVersion := scope.Config.GetAnnotations()[infrav1.K8sVersionAnnotation]
-	downloader := installer.NewBundleDownloader(scope.Config.Spec.BundleType, scope.Config.Spec.BundleRepo, "{{.BUNDLE_DOWNLOAD_PATH}}", logger)
-	installerObj, err := installer.NewInstaller(ctx, scope.ByoMachine.Status.HostInfo.OSImage, scope.ByoMachine.Status.HostInfo.Architecture, k8sVersion, downloader)
-	if err != nil {
-		logger.Error(err, "failed to create installer instance", "osImage", scope.ByoMachine.Status.HostInfo.OSImage, "architecture", scope.ByoMachine.Status.HostInfo.Architecture, "k8sVersion", k8sVersion)
-		return ctrl.Result{}, err
+
+	// Check JoinMode to determine which installer to use
+	joinMode := scope.ByoMachine.Spec.JoinMode
+	logger.Info("Using join mode", "joinMode", joinMode)
+
+	var installerObj installer.K8sInstaller
+	var err error
+
+	if joinMode == infrav1.JoinModeTLSBootstrap {
+		// Use kubexm installer for TLS Bootstrap mode
+		downloadMode := string(scope.ByoMachine.Spec.DownloadMode)
+		if downloadMode == "" {
+			downloadMode = "online" // Default to online mode
+		}
+
+		// Get proxy configuration from ByoCluster annotations
+		proxyConfig := r.getProxyConfig(ctx, scope)
+
+		installerObj, err = installer.NewKubexmInstaller(
+			ctx,
+			scope.ByoMachine.Status.HostInfo.OSImage,
+			scope.ByoMachine.Status.HostInfo.Architecture,
+			k8sVersion,
+			downloadMode,
+			proxyConfig,
+		)
+		if err != nil {
+			logger.Error(err, "failed to create kubexm installer instance", "osImage", scope.ByoMachine.Status.HostInfo.OSImage, "architecture", scope.ByoMachine.Status.HostInfo.Architecture, "k8sVersion", k8sVersion, "downloadMode", downloadMode)
+			return ctrl.Result{}, err
+		}
+		logger.Info("Using kubexm installer for TLS Bootstrap mode", "downloadMode", downloadMode)
+	} else {
+		// Use standard kubeadm installer (default)
+		downloader := installer.NewBundleDownloader(scope.Config.Spec.BundleType, scope.Config.Spec.BundleRepo, "{{.BUNDLE_DOWNLOAD_PATH}}", logger)
+		installerObj, err = installer.NewInstaller(ctx, scope.ByoMachine.Status.HostInfo.OSImage, scope.ByoMachine.Status.HostInfo.Architecture, k8sVersion, downloader)
+		if err != nil {
+			logger.Error(err, "failed to create installer instance", "osImage", scope.ByoMachine.Status.HostInfo.OSImage, "architecture", scope.ByoMachine.Status.HostInfo.Architecture, "k8sVersion", k8sVersion)
+			return ctrl.Result{}, err
+		}
+		logger.Info("Using kubeadm installer")
 	}
 
 	// creating installation secret
@@ -163,11 +199,100 @@ func (r *K8sInstallerConfigReconciler) reconcileNormal(ctx context.Context, scop
 	return ctrl.Result{}, nil
 }
 
+// getProxyConfig extracts proxy configuration from ByoCluster annotations
+func (r *K8sInstallerConfigReconciler) getProxyConfig(ctx context.Context, scope *k8sInstallerConfigScope) map[string]string {
+	proxyConfig := map[string]string{}
+	cluster, err := util.GetClusterFromMetadata(ctx, r.Client, scope.ByoMachine.ObjectMeta)
+	if err != nil {
+		return proxyConfig
+	}
+
+	byoCluster := &infrav1.ByoCluster{}
+	if err := r.Client.Get(ctx, client.ObjectKey{
+		Namespace: scope.ByoMachine.Namespace,
+		Name:      cluster.Spec.InfrastructureRef.Name,
+	}, byoCluster); err != nil {
+		return proxyConfig
+	}
+
+	for k, v := range byoCluster.Annotations {
+		if strings.HasPrefix(k, "infrastructure.cluster.x-k8s.io/http-proxy") {
+			proxyConfig["http-proxy"] = v
+		}
+		if strings.HasPrefix(k, "infrastructure.cluster.x-k8s.io/https-proxy") {
+			proxyConfig["https-proxy"] = v
+		}
+		if strings.HasPrefix(k, "infrastructure.cluster.x-k8s.io/no-proxy") {
+			proxyConfig["no-proxy"] = v
+		}
+	}
+
+	return proxyConfig
+}
+
+// getBootstrapKubeconfigData fetches the bootstrap-kubeconfig data for kubexm mode
+func (r *K8sInstallerConfigReconciler) getBootstrapKubeconfigData(ctx context.Context, scope *k8sInstallerConfigScope) ([]byte, error) {
+	// Look for BootstrapKubeconfig in the same namespace
+	bootstrapKubeconfigList := &infrav1.BootstrapKubeconfigList{}
+	if err := r.Client.List(ctx, bootstrapKubeconfigList, client.InNamespace(scope.ByoMachine.Namespace)); err != nil {
+		return nil, err
+	}
+
+	// Find the BootstrapKubeconfig that has data
+	for _, bkc := range bootstrapKubeconfigList.Items {
+		if bkc.Status.BootstrapKubeconfigData != nil {
+			return []byte(*bkc.Status.BootstrapKubeconfigData), nil
+		}
+	}
+
+	// If not found, try to get from Machine's bootstrap.dataSecretName
+	machine, err := util.GetOwnerMachine(ctx, r.Client, scope.ByoMachine.ObjectMeta)
+	if err != nil {
+		return nil, err
+	}
+
+	if machine != nil && machine.Spec.Bootstrap.DataSecretName != nil {
+		secret := &corev1.Secret{}
+		if err := r.Client.Get(ctx, client.ObjectKey{
+			Namespace: scope.ByoMachine.Namespace,
+			Name:      *machine.Spec.Bootstrap.DataSecretName,
+		}, secret); err != nil {
+			return nil, err
+		}
+
+		// Check if the secret contains a kubeconfig
+		if data, ok := secret.Data["value"]; ok {
+			return data, nil
+		}
+	}
+
+	// Return empty result - caller will use fallback mechanism
+	// Returning nil, nil indicates "not found" (not an error)
+	return nil, nil
+}
+
 // storeInstallationData creates a new secret with the install and unstall data passed in as input,
 // sets the reference in the configuration status and ready to true.
 func (r *K8sInstallerConfigReconciler) storeInstallationData(ctx context.Context, scope *k8sInstallerConfigScope, install, uninstall string) error {
 	logger := scope.Logger
 	logger.Info("creating installation secret")
+
+	secretData := map[string][]byte{
+		"install":   []byte(install),
+		"uninstall": []byte(uninstall),
+	}
+
+	// For kubexm mode, add bootstrap-kubeconfig data
+	if scope.ByoMachine.Spec.JoinMode == infrav1.JoinModeTLSBootstrap {
+		bootstrapKubeconfigData, err := r.getBootstrapKubeconfigData(ctx, scope)
+		if err != nil {
+			logger.Error(err, "failed to get bootstrap-kubeconfig data for kubexm mode")
+			// Don't fail, just log the error - the agent will try to get it from elsewhere
+		} else if len(bootstrapKubeconfigData) > 0 {
+			secretData["bootstrap-kubeconfig"] = bootstrapKubeconfigData
+			logger.Info("added bootstrap-kubeconfig to installation secret for kubexm mode")
+		}
+	}
 
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -186,10 +311,7 @@ func (r *K8sInstallerConfigReconciler) storeInstallationData(ctx context.Context
 				},
 			},
 		},
-		Data: map[string][]byte{
-			"install":   []byte(install),
-			"uninstall": []byte(uninstall),
-		},
+		Data: secretData,
 		Type: clusterv1.ClusterSecretType,
 	}
 
