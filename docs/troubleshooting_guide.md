@@ -81,8 +81,8 @@ After successful pre-requisite package prechecks when the bundle is not found lo
 ```
 I0307 06:15:24.903253   19079 installer.go:104]  "msg"="Detected"  "OS"="Ubuntu_20.04.2_x86-64"
 I0307 06:15:24.903551   19079 installer.go:175]  "msg"="Current OS will be handled as"  "OS"="Ubuntu_20.04.1_x86-64"
-I0307 06:15:24.903807   19079 bundle_downloader.go:69]  "msg"="Cache miss"  "path"="projects.registry.vmware.com.cluster_api_provider_bringyourownhost/v1.22.3-v0.1.0_alpha.2"
-I0307 06:15:24.904267   19079 bundle_downloader.go:95]  "msg"="Downloading bundle"  "from"="projects.registry.vmware.com/cluster_api_provider_bringyourownhost/byoh-bundle-ubuntu_20.04.1_x86-64_k8s_v1.22.3:v0.1.0_alpha.2"
+I0307 06:15:24.903807   19079 bundle_downloader.go:69]  "msg"="Cache miss"  "path"="docker.io.mensyli.cluster-api-byoh-controller/v1.22.3-v0.1.0_alpha.2"
+I0307 06:15:24.904267   19079 bundle_downloader.go:95]  "msg"="Downloading bundle"  "from"="docker.io/mensyli/cluster-api-byoh-controller/byoh-bundle-ubuntu_20.04.1_x86-64_k8s_v1.22.3:v0.1.0_alpha.2"
 E0307 06:15:29.452444   19079 cli-dev.go:151]  "msg"="error installing/uninstalling" "error"="Error downloading bundle" 
 ```
 

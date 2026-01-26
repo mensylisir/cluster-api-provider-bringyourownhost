@@ -4,6 +4,7 @@
 package v1beta1
 
 import (
+	"k8s.io/apimachinery/pkg/api/resource"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
@@ -82,6 +83,27 @@ type ByoHostSpec struct {
 	// - true: Agent starts kube-proxy binary (binary deployment approach)
 	// +optional
 	ManageKubeProxy bool `json:"manageKubeProxy,omitempty"`
+
+	// Capacity represents the total resources of the host.
+	// This is used by the autoscaler for scale-from-zero and capacity-aware scheduling.
+	// +optional
+	Capacity map[corev1.ResourceName]resource.Quantity `json:"capacity,omitempty"`
+
+	// Labels to be applied to the node when it joins the cluster.
+	// This allows for custom scheduling and selection of nodes based on workload requirements.
+	// +optional
+	Labels map[string]string `json:"labels,omitempty"`
+
+	// Taints to be applied to the node when it joins the cluster.
+	// This allows for scheduling workloads that tolerate specific taints.
+	// +optional
+	Taints []corev1.Taint `json:"taints,omitempty"`
+
+	// Priority determines the preference for selecting this host when multiple
+	// hosts are available. Higher values indicate higher priority.
+	// Defaults to 0.
+	// +optional
+	Priority *int32 `json:"priority,omitempty"`
 }
 
 // HostInfo is a set of details about the host platform.
@@ -154,4 +176,36 @@ func (byoHost *ByoHost) GetConditions() clusterv1.Conditions {
 // SetConditions sets the ByoHost status conditions
 func (byoHost *ByoHost) SetConditions(conditions clusterv1.Conditions) {
 	byoHost.Status.Conditions = conditions
+}
+
+// IsAvailable checks if the ByoHost is available for allocation
+func (byoHost *ByoHost) IsAvailable() bool {
+	return byoHost.Status.MachineRef == nil
+}
+
+// GetPriority returns the priority of the host, defaulting to 0
+func (byoHost *ByoHost) GetPriority() int32 {
+	if byoHost.Spec.Priority == nil {
+		return 0
+	}
+	return *byoHost.Spec.Priority
+}
+
+// MatchesRequirements checks if the host matches the given label selector and capacity requirements
+func (byoHost *ByoHost) MatchesRequirements(selector map[string]string, requiredCapacity map[corev1.ResourceName]resource.Quantity) bool {
+	// Check labels
+	for key, value := range selector {
+		if byoHost.Spec.Labels[key] != value {
+			return false
+		}
+	}
+
+	// Check capacity
+	for resourceName, required := range requiredCapacity {
+		if available, exists := byoHost.Spec.Capacity[resourceName]; !exists || available.Cmp(required) < 0 {
+			return false
+		}
+	}
+
+	return true
 }

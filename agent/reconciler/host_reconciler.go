@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
-	"github.com/vmware-tanzu/cluster-api-provider-bringyourownhost/agent/cloudinit"
-	"github.com/vmware-tanzu/cluster-api-provider-bringyourownhost/agent/registration"
-	"github.com/vmware-tanzu/cluster-api-provider-bringyourownhost/common"
+	"github.com/mensylisir/cluster-api-provider-bringyourownhost/agent/cloudinit"
+	"github.com/mensylisir/cluster-api-provider-bringyourownhost/agent/registration"
+	"github.com/mensylisir/cluster-api-provider-bringyourownhost/common"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
@@ -26,7 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	"github.com/kube-vip/kube-vip/pkg/vip"
-	infrastructurev1beta1 "github.com/vmware-tanzu/cluster-api-provider-bringyourownhost/apis/infrastructure/v1beta1"
+	infrastructurev1beta1 "github.com/mensylisir/cluster-api-provider-bringyourownhost/apis/infrastructure/v1beta1"
 )
 
 // HostReconciler encapsulates the data/logic needed to reconcile a ByoHost
@@ -42,6 +42,8 @@ type HostReconciler struct {
 
 const (
 	bootstrapSentinelFile = "/run/cluster-api/bootstrap-success.complete"
+	// machineIDFile stores the UID of the Machine currently bound to this host
+	machineIDFile = "/run/cluster-api/machine-id"
 	// KubeadmResetCommand is the command to run to force reset/remove nodes' local file system of the files created by kubeadm
 	KubeadmResetCommand = "kubeadm reset --force"
 	// NOTE: Agent does NOT use finalizer because it's an external process that can crash.
@@ -95,6 +97,18 @@ func (r *HostReconciler) reconcileNormal(ctx context.Context, byoHost *infrastru
 	logger = logger.WithValues("ByoHost", byoHost.Name)
 	logger.Info("reconcile normal")
 	if byoHost.Status.MachineRef == nil {
+		// Check for Zombie state: MachineRef is nil (cleared by Controller force cleanup),
+		// but we are still bootstrapped locally. We must self-clean to ensure consistency.
+		if conditions.IsTrue(byoHost, infrastructurev1beta1.K8sNodeBootstrapSucceeded) ||
+			conditions.IsTrue(byoHost, infrastructurev1beta1.K8sComponentsInstallationSucceeded) {
+			logger.Info("MachineRef is nil but host appears to be bootstrapped. Detected Zombie state (Force Cleanup occurred). Triggering self-cleanup.")
+			if err := r.hostCleanUp(ctx, byoHost); err != nil {
+				return ctrl.Result{}, err
+			}
+			// Cleanup successful
+			return ctrl.Result{}, nil
+		}
+
 		logger.Info("Machine ref not yet set")
 		conditions.MarkFalse(byoHost, infrastructurev1beta1.K8sNodeBootstrapSucceeded, infrastructurev1beta1.WaitingForMachineRefReason, clusterv1.ConditionSeverityInfo, "")
 		return ctrl.Result{}, nil
@@ -104,6 +118,26 @@ func (r *HostReconciler) reconcileNormal(ctx context.Context, byoHost *infrastru
 		logger.Info("BootstrapDataSecret not ready")
 		conditions.MarkFalse(byoHost, infrastructurev1beta1.K8sNodeBootstrapSucceeded, infrastructurev1beta1.BootstrapDataSecretUnavailableReason, clusterv1.ConditionSeverityInfo, "")
 		return ctrl.Result{}, nil
+	}
+
+	// Check for Machine ID mismatch (Agent consistency check)
+	// If the Agent is running on a host that was previously bound to another Machine,
+	// and the Agent missed the cleanup event (e.g. while offline), we must detect this
+	// and force a cleanup before proceeding.
+	if byoHost.Status.MachineRef != nil {
+		currentMachineIDBytes, err := os.ReadFile(machineIDFile)
+		if err == nil {
+			currentMachineID := strings.TrimSpace(string(currentMachineIDBytes))
+			if currentMachineID != string(byoHost.Status.MachineRef.UID) {
+				logger.Info("Detected Machine UID mismatch. Host is bound to a new Machine but carries old state.",
+					"oldID", currentMachineID, "newID", byoHost.Status.MachineRef.UID)
+				if err := r.hostCleanUp(ctx, byoHost); err != nil {
+					return ctrl.Result{}, err
+				}
+				// Cleanup triggered, return to allow fresh reconciliation
+				return ctrl.Result{}, nil
+			}
+		}
 	}
 
 	if !conditions.IsTrue(byoHost, infrastructurev1beta1.K8sNodeBootstrapSucceeded) {
@@ -151,6 +185,13 @@ func (r *HostReconciler) reconcileNormal(ctx context.Context, byoHost *infrastru
 		logger.Info("k8s node successfully bootstrapped")
 		r.Recorder.Event(byoHost, corev1.EventTypeNormal, "BootstrapK8sNodeSucceeded", "k8s Node Bootstraped")
 		conditions.MarkTrue(byoHost, infrastructurev1beta1.K8sNodeBootstrapSucceeded)
+
+		// Persist Machine ID to ensure consistency across restarts/rebinds
+		if byoHost.Status.MachineRef != nil {
+			if err := os.WriteFile(machineIDFile, []byte(byoHost.Status.MachineRef.UID), 0644); err != nil {
+				logger.Error(err, "failed to persist machine ID")
+			}
+		}
 	}
 
 	return ctrl.Result{}, nil
@@ -387,6 +428,12 @@ func (r *HostReconciler) hostCleanUp(ctx context.Context, byoHost *infrastructur
 	byoHost.Spec.UninstallationScript = nil
 	r.removeAnnotations(ctx, byoHost)
 	conditions.MarkFalse(byoHost, infrastructurev1beta1.K8sNodeBootstrapSucceeded, infrastructurev1beta1.K8sNodeAbsentReason, clusterv1.ConditionSeverityInfo, "")
+
+	// Remove Machine ID file
+	if err := os.Remove(machineIDFile); err != nil && !os.IsNotExist(err) {
+		logger.Error(err, "failed to remove machine ID file")
+	}
+
 	return nil
 }
 
@@ -543,7 +590,7 @@ func (r *HostReconciler) bootstrapK8sNodeTLS(ctx context.Context, byoHost *infra
 		"--pod-manifest-path=/etc/kubernetes/manifests",
 		// Inject provider-id for Cluster Autoscaler compatibility
 		// This matches the behavior in Kubeadm mode (cloudinit interceptor)
-		fmt.Sprintf("--provider-id=byoh://%s", byoHost.Name),
+		fmt.Sprintf("--provider-id=%s", common.GenerateProviderID(byoHost.Name)),
 	}
 
 	// Add cluster DNS configuration from annotations if available

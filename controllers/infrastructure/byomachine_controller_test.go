@@ -10,10 +10,11 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	infrastructurev1beta1 "github.com/vmware-tanzu/cluster-api-provider-bringyourownhost/apis/infrastructure/v1beta1"
-	controllers "github.com/vmware-tanzu/cluster-api-provider-bringyourownhost/controllers/infrastructure"
-	"github.com/vmware-tanzu/cluster-api-provider-bringyourownhost/test/builder"
-	eventutils "github.com/vmware-tanzu/cluster-api-provider-bringyourownhost/test/utils/events"
+	"github.com/mensylisir/cluster-api-provider-bringyourownhost/common"
+	infrastructurev1beta1 "github.com/mensylisir/cluster-api-provider-bringyourownhost/apis/infrastructure/v1beta1"
+	controllers "github.com/mensylisir/cluster-api-provider-bringyourownhost/controllers/infrastructure"
+	"github.com/mensylisir/cluster-api-provider-bringyourownhost/test/builder"
+	eventutils "github.com/mensylisir/cluster-api-provider-bringyourownhost/test/utils/events"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -65,7 +66,7 @@ var _ = Describe("Controllers/ByomachineController", func() {
 		byoMachineLookupKey = types.NamespacedName{Name: byoMachine.Name, Namespace: byoMachine.Namespace}
 
 		k8sInstallerConfigTemplate = builder.K8sInstallerConfigTemplate(defaultNamespace, defaultK8sInstallerConfigTemplateName).
-			WithBundleRepo("projects.registry.vmware.com/cluster_api_provider_bringyourownhost").
+			WithBundleRepo("docker.io/mensyli/cluster-api-byoh-controller").
 			WithBundleType("k8s").
 			Build()
 		Expect(k8sClientUncached.Create(ctx, k8sInstallerConfigTemplate)).Should(Succeed())
@@ -141,7 +142,7 @@ var _ = Describe("Controllers/ByomachineController", func() {
 
 			It("should not return error when node.Spec.ProviderID is with correct value", func() {
 				node = builder.Node(defaultNamespace, byoHost.Name).
-					WithProviderID(fmt.Sprintf("%s%s/%s", controllers.ProviderIDPrefix, byoHost.Name, util.RandomString(controllers.ProviderIDSuffixLength))).
+					WithProviderID(fmt.Sprintf("%s%s/%s", common.ProviderIDPrefix, byoHost.Name, util.RandomString(controllers.ProviderIDSuffixLength))).
 					Build()
 				Expect(clientFake.Create(ctx, node)).Should(Succeed())
 				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: byoMachineLookupKey})
@@ -150,7 +151,7 @@ var _ = Describe("Controllers/ByomachineController", func() {
 
 			It("should return error when node.Spec.ProviderID has stale value", func() {
 				node = builder.Node(defaultNamespace, byoHost.Name).
-					WithProviderID(fmt.Sprintf("%sanother-host/%s", controllers.ProviderIDPrefix, util.RandomString(controllers.ProviderIDSuffixLength))).
+					WithProviderID(fmt.Sprintf("%sanother-host/%s", common.ProviderIDPrefix, util.RandomString(controllers.ProviderIDSuffixLength))).
 					Build()
 				Expect(clientFake.Create(ctx, node)).Should(Succeed())
 				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: byoMachineLookupKey})
@@ -254,7 +255,7 @@ var _ = Describe("Controllers/ByomachineController", func() {
 				createdByoMachine := &infrastructurev1beta1.ByoMachine{}
 				err = k8sClientUncached.Get(ctx, byoMachineLookupKey, createdByoMachine)
 				Expect(err).ToNot(HaveOccurred())
-				Expect(createdByoMachine.Spec.ProviderID).To(ContainSubstring(controllers.ProviderIDPrefix))
+				Expect(createdByoMachine.Spec.ProviderID).To(ContainSubstring(common.ProviderIDPrefix))
 				Expect(createdByoMachine.Status.Ready).To(BeTrue())
 
 				actualCondition := conditions.Get(createdByoMachine, infrastructurev1beta1.BYOHostReady)
@@ -275,7 +276,7 @@ var _ = Describe("Controllers/ByomachineController", func() {
 				err = clientFake.Get(ctx, types.NamespacedName{Name: byoHost.Name, Namespace: defaultNamespace}, &node)
 				Expect(err).NotTo(HaveOccurred())
 
-				Expect(node.Spec.ProviderID).To(ContainSubstring(controllers.ProviderIDPrefix))
+				Expect(node.Spec.ProviderID).To(ContainSubstring(common.ProviderIDPrefix))
 			})
 
 			Context("When ByoMachine is attached to a host", func() {
@@ -425,7 +426,7 @@ var _ = Describe("Controllers/ByomachineController", func() {
 					BeforeEach(func() {
 						k8sInstallerConfig = builder.K8sInstallerConfig(defaultNamespace, "").
 							WithName(byoMachine.Name).
-							WithBundleRepo("projects.registry.vmware.com/cluster_api_provider_bringyourownhost").
+							WithBundleRepo("docker.io/mensyli/cluster-api-byoh-controller").
 							WithBundleType("k8s").
 							Build()
 						Expect(k8sClientUncached.Create(ctx, k8sInstallerConfig)).Should(Succeed())
@@ -739,7 +740,7 @@ var _ = Describe("Controllers/ByomachineController", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				var nodeTagged bool
-				if strings.Contains(node1.Spec.ProviderID, controllers.ProviderIDPrefix) || strings.Contains(node2.Spec.ProviderID, controllers.ProviderIDPrefix) {
+				if strings.Contains(node1.Spec.ProviderID, common.ProviderIDPrefix) || strings.Contains(node2.Spec.ProviderID, common.ProviderIDPrefix) {
 					nodeTagged = true
 				}
 				Expect(nodeTagged).To(Equal(true))
@@ -783,7 +784,7 @@ var _ = Describe("Controllers/ByomachineController", func() {
 				err = clientFake.Get(ctx, types.NamespacedName{Name: byoHost1.Name, Namespace: defaultNamespace}, &node)
 				Expect(err).NotTo(HaveOccurred())
 
-				Expect(node.Spec.ProviderID).To(ContainSubstring(controllers.ProviderIDPrefix))
+				Expect(node.Spec.ProviderID).To(ContainSubstring(common.ProviderIDPrefix))
 			})
 
 			AfterEach(func() {

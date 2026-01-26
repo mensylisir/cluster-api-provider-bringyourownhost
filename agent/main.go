@@ -16,12 +16,13 @@ import (
 
 	"github.com/go-logr/logr"
 	pflag "github.com/spf13/pflag"
-	"github.com/vmware-tanzu/cluster-api-provider-bringyourownhost/agent/cloudinit"
-	"github.com/vmware-tanzu/cluster-api-provider-bringyourownhost/agent/reconciler"
-	"github.com/vmware-tanzu/cluster-api-provider-bringyourownhost/agent/registration"
-	"github.com/vmware-tanzu/cluster-api-provider-bringyourownhost/agent/version"
-	infrastructurev1beta1 "github.com/vmware-tanzu/cluster-api-provider-bringyourownhost/apis/infrastructure/v1beta1"
-	"github.com/vmware-tanzu/cluster-api-provider-bringyourownhost/feature"
+	"github.com/mensylisir/cluster-api-provider-bringyourownhost/agent/cloudinit"
+	"github.com/mensylisir/cluster-api-provider-bringyourownhost/agent/reconciler"
+	"github.com/mensylisir/cluster-api-provider-bringyourownhost/agent/registration"
+	"github.com/mensylisir/cluster-api-provider-bringyourownhost/agent/version"
+	infrastructurev1beta1 "github.com/mensylisir/cluster-api-provider-bringyourownhost/apis/infrastructure/v1beta1"
+	"github.com/mensylisir/cluster-api-provider-bringyourownhost/feature"
+
 	certv1 "k8s.io/api/certificates/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/fields"
@@ -191,10 +192,26 @@ func main() {
 		if gpuInfo.Model != "" {
 			labels["nvidia.com/gpu.model"] = gpuInfo.Model
 		}
-		logger.Info("Detected NVIDIA GPU", "model", gpuInfo.Model)
+		if gpuInfo.Count > 0 {
+			labels["nvidia.com/gpu.count"] = fmt.Sprintf("%d", gpuInfo.Count)
+		}
+		logger.Info("Detected NVIDIA GPU", "model", gpuInfo.Model, "count", gpuInfo.Count)
 	}
 
-	err = registration.LocalHostRegistrar.Register(hostName, namespace, labels)
+	capacity := GetCapacity()
+
+	// Add capacity labels to allow filtering by machine capacity
+	if cpu, ok := capacity[corev1.ResourceCPU]; ok {
+		labels["capacity.infrastructure.cluster.x-k8s.io/cpu"] = fmt.Sprintf("%d", cpu.Value())
+	}
+	if mem, ok := capacity[corev1.ResourceMemory]; ok {
+		labels["capacity.infrastructure.cluster.x-k8s.io/memory"] = mem.String()
+	}
+	if gpu, ok := capacity["nvidia.com/gpu"]; ok {
+		labels["capacity.infrastructure.cluster.x-k8s.io/gpu"] = fmt.Sprintf("%d", gpu.Value())
+	}
+
+	err = registration.LocalHostRegistrar.Register(hostName, namespace, labels, capacity)
 	if err != nil {
 		logger.Error(err, "error registering host %s registration in namespace %s", hostName, namespace)
 		return

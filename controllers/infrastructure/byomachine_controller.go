@@ -6,9 +6,9 @@ package controllers
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand"
 	"reflect"
 	"regexp"
 	"strings"
@@ -37,7 +37,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	"github.com/go-logr/logr"
-	infrav1 "github.com/vmware-tanzu/cluster-api-provider-bringyourownhost/apis/infrastructure/v1beta1"
+	"github.com/mensylisir/cluster-api-provider-bringyourownhost/common"
+	infrav1 "github.com/mensylisir/cluster-api-provider-bringyourownhost/apis/infrastructure/v1beta1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -46,14 +47,23 @@ import (
 )
 
 const (
-	// ProviderIDPrefix prefix for provider id
-	ProviderIDPrefix = "byoh://"
 	// ProviderIDSuffixLength length of provider id suffix
 	ProviderIDSuffixLength = 6
 	// RequeueForbyohost requeue delay for byoh host
 	RequeueForbyohost = 10 * time.Second
 	// RequeueInstallerConfigTime requeue delay for installer config
 	RequeueInstallerConfigTime = 10 * time.Second
+
+	// HostLeaseAnnotationKey annotation key for lease-based locking
+	HostLeaseAnnotationKey = "byohost.infrastructure.cluster.x-k8s.io/lease"
+	// HostLeaseTimeoutSeconds lease timeout in seconds (30 seconds)
+	HostLeaseTimeoutSeconds = 30
+	// MaxRetries maximum number of retries for attaching a host
+	MaxRetries = 5
+
+	// hostCleanupTimeout reference timeout for ByoMachine deletion
+	// This should match the default value in byohost_controller.go
+	hostCleanupTimeout = 5 * time.Minute
 )
 
 // ByoMachineReconciler reconciles a ByoMachine object
@@ -62,6 +72,17 @@ type ByoMachineReconciler struct {
 	Scheme   *runtime.Scheme
 	Tracker  *remote.ClusterCacheTracker
 	Recorder record.EventRecorder
+
+	// roundRobinIndex tracks the last selected host for round-robin selection
+	// This is only for in-memory tracking and is not persisted
+	roundRobinIndex map[string]int
+}
+
+// lockInfo holds lease lock information for a ByoHost
+type lockInfo struct {
+	Holder      string    `json:"holder"`
+	AcquireTime  time.Time `json:"acquireTime"`
+	MachineName string    `json:"machineName"`
 }
 
 //+kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=byomachines,verbs=get;list;watch;create;update;patch;delete
@@ -477,15 +498,15 @@ func (r *ByoMachineReconciler) setNodeProviderID(ctx context.Context, remoteClie
 
 	if node.Spec.ProviderID != "" {
 		var match bool
-		// Match "byoh://<hostname>" or "byoh://<hostname>/<suffix>"
-		match, err = regexp.MatchString(fmt.Sprintf("^%s%s(/(.+))?$", ProviderIDPrefix, host.Name), node.Spec.ProviderID)
+		// Validate existing providerID matches expected format
+		match, err = validateProviderID(node.Spec.ProviderID, host.Name)
 		if err != nil {
-			return "", nil, err
+			return "", nil, fmt.Errorf("failed to validate providerID: %w", err)
 		}
 		if match {
 			return node.Spec.ProviderID, node, nil
 		}
-		return "", nil, errors.New("invalid format for node.Spec.ProviderID")
+		return "", nil, fmt.Errorf("invalid format for node.Spec.ProviderID: %s (expected format: %s)", node.Spec.ProviderID, generateProviderID(host))
 	}
 
 	helper, err := patch.NewHelper(node, remoteClient)
@@ -493,8 +514,8 @@ func (r *ByoMachineReconciler) setNodeProviderID(ctx context.Context, remoteClie
 		return "", nil, err
 	}
 
-	// Use simple format to match Agent: byoh://<hostname>
-	node.Spec.ProviderID = fmt.Sprintf("%s%s", ProviderIDPrefix, host.Name)
+	// Use standardized format to match Agent
+	node.Spec.ProviderID = generateProviderID(host)
 
 	return node.Spec.ProviderID, node, helper.Patch(ctx, node)
 }
@@ -607,36 +628,63 @@ func (r *ByoMachineReconciler) attachByoHost(ctx context.Context, machineScope *
 		return ctrl.Result{RequeueAfter: RequeueForbyohost}, errors.New("no hosts found")
 	}
 
-	// Try to attach a host with optimistic concurrency control
-	maxRetries := 3
-	for attempt := 1; attempt <= maxRetries; attempt++ {
-		// Optimization: Select a random host to reduce contention during concurrent scale-up
-		randomIndex := rand.Intn(len(hostsList.Items))
-		host := hostsList.Items[randomIndex]
+	// Try to attach a host with lease-based concurrency control
+	clusterName := machineScope.ByoMachine.Labels[clusterv1.ClusterNameLabel]
+	controllerID := fmt.Sprintf("byomachine-controller-%s", machineScope.ByoMachine.Name)
+
+	for attempt := 0; attempt < MaxRetries; attempt++ {
+		// Select a host using round-robin to avoid bias
+		selectedHost := r.selectHostForClaim(hostsList.Items, clusterName, machineScope.ByoMachine)
+		if selectedHost == nil {
+			logger.Error(nil, "no host selected by round-robin algorithm")
+			return ctrl.Result{RequeueAfter: RequeueForbyohost}, errors.New("no host selected")
+		}
 
 		// Re-fetch the host from the API server to get the latest version
 		latestHost := &infrav1.ByoHost{}
-		if err := r.Client.Get(ctx, client.ObjectKey{Namespace: host.Namespace, Name: host.Name}, latestHost); err != nil {
-			logger.Error(err, "failed to re-fetch byohost", "byohost", host.Name)
+		if err := r.Client.Get(ctx, client.ObjectKey{Namespace: selectedHost.Namespace, Name: selectedHost.Name}, latestHost); err != nil {
+			logger.Error(err, "failed to re-fetch byohost", "byohost", selectedHost.Name)
+			// Wait with exponential backoff before trying another host
+			time.Sleep(exponentialBackoff(attempt))
 			continue
 		}
 
 		// Check if another reconciler already claimed this host
 		if latestHost.Status.MachineRef != nil {
-			logger.Info("Host already claimed by another machine, trying another host", "byohost", host.Name)
+			logger.Info("Host already claimed by another machine, trying another host", "byohost", latestHost.Name)
+			// Wait with exponential backoff before trying another host
+			time.Sleep(exponentialBackoff(attempt))
 			continue
 		}
 
-		// Create a fresh copy for patching
-		host = *latestHost
-
-		byohostHelper, err := patch.NewHelper(&host, r.Client)
+		// Try to acquire lease on this host
+		leaseAcquired, err := r.tryAcquireLease(ctx, latestHost, machineScope.ByoMachine.Name, controllerID)
 		if err != nil {
-			logger.Error(err, "Creating patch helper failed")
+			logger.Error(err, "failed to acquire lease", "byohost", latestHost.Name)
+			// Wait with exponential backoff before trying another host
+			time.Sleep(exponentialBackoff(attempt))
 			continue
 		}
 
-		host.Status.MachineRef = &corev1.ObjectReference{
+		if !leaseAcquired {
+			logger.Info("Lease held by another controller, trying another host", "byohost", latestHost.Name)
+			// Wait with exponential backoff before trying another host
+			time.Sleep(exponentialBackoff(attempt))
+			continue
+		}
+
+		// Lease acquired successfully, now try to claim the host
+		byohostHelper, err := patch.NewHelper(latestHost, r.Client)
+		if err != nil {
+			logger.Error(err, "Creating patch helper failed", "byohost", latestHost.Name)
+			// Release the lease before retrying
+			_ = r.releaseLease(ctx, latestHost)
+			time.Sleep(exponentialBackoff(attempt))
+			continue
+		}
+
+		// Set MachineRef
+		latestHost.Status.MachineRef = &corev1.ObjectReference{
 			APIVersion: machineScope.ByoMachine.APIVersion,
 			Kind:       machineScope.ByoMachine.Kind,
 			Namespace:  machineScope.ByoMachine.Namespace,
@@ -644,22 +692,24 @@ func (r *ByoMachineReconciler) attachByoHost(ctx context.Context, machineScope *
 			UID:        machineScope.ByoMachine.UID,
 		}
 		// Set the cluster Label
-		hostLabels := host.Labels
+		hostLabels := latestHost.Labels
 		if hostLabels == nil {
 			hostLabels = make(map[string]string)
 		}
-		hostLabels[clusterv1.ClusterNameLabel] = machineScope.ByoMachine.Labels[clusterv1.ClusterNameLabel]
+		hostLabels[clusterv1.ClusterNameLabel] = clusterName
 		hostLabels[infrav1.AttachedByoMachineLabel] = machineScope.ByoMachine.Namespace + "." + machineScope.ByoMachine.Name
-		host.Labels = hostLabels
+		latestHost.Labels = hostLabels
 
 		// For TLS Bootstrap mode, create and use the TLS bootstrap secret
 		if machineScope.ByoMachine.Spec.JoinMode == infrav1.JoinModeTLSBootstrap {
 			tlsBootstrapSecret, err := r.createBootstrapSecretTLSBootstrap(ctx, machineScope)
 			if err != nil {
 				logger.Error(err, "failed to create TLS bootstrap secret")
+				// Release the lease before returning
+				_ = r.releaseLease(ctx, latestHost)
 				return ctrl.Result{}, err
 			}
-			host.Spec.BootstrapSecret = &corev1.ObjectReference{
+			latestHost.Spec.BootstrapSecret = &corev1.ObjectReference{
 				Kind:      "Secret",
 				Namespace: tlsBootstrapSecret.Namespace,
 				Name:      tlsBootstrapSecret.Name,
@@ -667,7 +717,7 @@ func (r *ByoMachineReconciler) attachByoHost(ctx context.Context, machineScope *
 			logger.Info("Using TLS bootstrap secret", "secret", tlsBootstrapSecret.Name)
 		} else {
 			// For kubeadm mode, use the original bootstrap secret
-			host.Spec.BootstrapSecret = &corev1.ObjectReference{
+			latestHost.Spec.BootstrapSecret = &corev1.ObjectReference{
 				Kind:      "Secret",
 				Namespace: machineScope.ByoMachine.Namespace,
 				Name:      *machineScope.Machine.Spec.Bootstrap.DataSecretName,
@@ -675,36 +725,47 @@ func (r *ByoMachineReconciler) attachByoHost(ctx context.Context, machineScope *
 		}
 
 		// Sync JoinMode from ByoMachine to ByoHost
-		host.Spec.JoinMode = machineScope.ByoMachine.Spec.JoinMode
+		latestHost.Spec.JoinMode = machineScope.ByoMachine.Spec.JoinMode
 
 		// Sync DownloadMode from ByoMachine to ByoHost (only for TLSBootstrap mode)
-		host.Spec.DownloadMode = machineScope.ByoMachine.Spec.DownloadMode
+		latestHost.Spec.DownloadMode = machineScope.ByoMachine.Spec.DownloadMode
 
 		// Sync KubernetesVersion from ByoMachine to ByoHost
-		host.Spec.KubernetesVersion = machineScope.ByoMachine.Spec.KubernetesVersion
+		latestHost.Spec.KubernetesVersion = machineScope.ByoMachine.Spec.KubernetesVersion
 
 		// Sync ManageKubeProxy from ByoMachine to ByoHost (only for TLSBootstrap mode)
-		host.Spec.ManageKubeProxy = machineScope.ByoMachine.Spec.ManageKubeProxy
+		latestHost.Spec.ManageKubeProxy = machineScope.ByoMachine.Spec.ManageKubeProxy
 
-		if host.Annotations == nil {
-			host.Annotations = make(map[string]string)
+		if latestHost.Annotations == nil {
+			latestHost.Annotations = make(map[string]string)
 		}
-		host.Annotations[infrav1.EndPointIPAnnotation] = machineScope.Cluster.Spec.ControlPlaneEndpoint.Host
-		host.Annotations[infrav1.K8sVersionAnnotation] = strings.Split(*machineScope.Machine.Spec.Version, "+")[0]
-		host.Annotations[infrav1.BundleLookupBaseRegistryAnnotation] = machineScope.ByoCluster.Spec.BundleLookupBaseRegistry
+		latestHost.Annotations[infrav1.EndPointIPAnnotation] = machineScope.Cluster.Spec.ControlPlaneEndpoint.Host
+		latestHost.Annotations[infrav1.K8sVersionAnnotation] = strings.Split(*machineScope.Machine.Spec.Version, "+")[0]
+		latestHost.Annotations[infrav1.BundleLookupBaseRegistryAnnotation] = machineScope.ByoCluster.Spec.BundleLookupBaseRegistry
 
-		err = byohostHelper.Patch(ctx, &host)
+		err = byohostHelper.Patch(ctx, latestHost)
 		if err != nil {
-			logger.Error(err, "failed to patch byohost, will retry", "byohost", host.Name)
+			logger.Error(err, "failed to patch byohost, will retry", "byohost", latestHost.Name)
+			// Release the lease before retrying
+			_ = r.releaseLease(ctx, latestHost)
+			// Wait with exponential backoff before trying another host
+			time.Sleep(exponentialBackoff(attempt))
 			continue
 		}
-		logger.Info("Successfully attached Byohost", "byohost", host.Name)
-		machineScope.ByoHost = &host
+
+		// Successfully attached the host, release the lease
+		err = r.releaseLease(ctx, latestHost)
+		if err != nil {
+			logger.Error(err, "failed to release lease", "byohost", latestHost.Name)
+			// Don't return error here, as the host is already claimed successfully
+		}
+		logger.Info("Successfully attached Byohost", "byohost", latestHost.Name)
+		machineScope.ByoHost = latestHost
 		return ctrl.Result{}, nil
 	}
 
-	logger.Error(err, "failed to attach byohost after all retries")
-	return ctrl.Result{RequeueAfter: RequeueForbyohost}, err
+	logger.Error(nil, "failed to attach byohost after all retries")
+	return ctrl.Result{RequeueAfter: RequeueForbyohost}, errors.New("failed to attach byohost after all retries")
 }
 
 // ByoHostToByoMachineMapFunc returns a handler.ToRequestsFunc that watches for
@@ -1005,4 +1066,155 @@ func extractCAFromCloudInit(script string) []byte {
 		}
 	}
 	return nil
+}
+
+// tryAcquireLease attempts to acquire a lease on the given ByoHost
+// Returns true if lease was acquired, false if lease is held by another instance
+func (r *ByoMachineReconciler) tryAcquireLease(ctx context.Context, byoHost *infrav1.ByoHost, machineName string, controllerID string) (bool, error) {
+	now := time.Now()
+
+	// Check if lease exists and is still valid
+	if leaseStr, exists := byoHost.Annotations[HostLeaseAnnotationKey]; exists {
+		var currentLock lockInfo
+		if err := json.Unmarshal([]byte(leaseStr), &currentLock); err == nil {
+			// Check if lease has expired
+			if currentLock.AcquireTime.Add(time.Duration(HostLeaseTimeoutSeconds)*time.Second).After(now) {
+				// Lease is still valid and held by someone
+				return false, nil
+			}
+		}
+	}
+
+	// Try to acquire the lease
+	newLock := lockInfo{
+		Holder:      controllerID,
+		AcquireTime: now,
+		MachineName: machineName,
+	}
+	lockData, err := json.Marshal(newLock)
+	if err != nil {
+		return false, fmt.Errorf("failed to marshal lock data: %w", err)
+	}
+
+	// Use Update to atomically acquire the lease with optimistic locking (ResourceVersion check)
+	if byoHost.Annotations == nil {
+		byoHost.Annotations = make(map[string]string)
+	}
+	byoHost.Annotations[HostLeaseAnnotationKey] = string(lockData)
+
+	// We use Update instead of Patch to ensure we don't overwrite if someone else updated the object
+	// This relies on ResourceVersion check enforced by the API server
+	if err := r.Client.Update(ctx, byoHost); err != nil {
+		if apierrors.IsConflict(err) {
+			// Optimistic lock failed - someone else updated the object
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to update lease: %w", err)
+	}
+
+	return true, nil
+}
+
+// releaseLease releases the lease on the given ByoHost
+func (r *ByoMachineReconciler) releaseLease(ctx context.Context, byoHost *infrav1.ByoHost) error {
+	if byoHost.Annotations == nil {
+		return nil
+	}
+
+	// Check if our lease exists
+	if _, exists := byoHost.Annotations[HostLeaseAnnotationKey]; !exists {
+		return nil
+	}
+
+	patchHelper, err := patch.NewHelper(byoHost, r.Client)
+	if err != nil {
+		return fmt.Errorf("failed to create patch helper: %w", err)
+	}
+
+	delete(byoHost.Annotations, HostLeaseAnnotationKey)
+
+	if err := patchHelper.Patch(ctx, byoHost); err != nil {
+		return fmt.Errorf("failed to release lease: %w", err)
+	}
+
+	return nil
+}
+
+// exponentialBackoff returns the delay for the nth attempt (0-indexed)
+// First attempt: 0ms, Second: 100ms, Third: 200ms, Fourth: 400ms, Fifth: 800ms
+func exponentialBackoff(attempt int) time.Duration {
+	if attempt == 0 {
+		return 0
+	}
+	return time.Duration(1<<uint(attempt-1)) * 100 * time.Millisecond
+}
+
+// selectHostForClaim implements priority-based selection with round-robin for hosts with the same priority
+func (r *ByoMachineReconciler) selectHostForClaim(hostsList []infrav1.ByoHost, clusterName string, machine *infrav1.ByoMachine) *infrav1.ByoHost {
+	if len(hostsList) == 0 {
+		return nil
+	}
+
+	// Filter available hosts that match capacity requirements
+	var availableHosts []infrav1.ByoHost
+	for _, host := range hostsList {
+		if !host.IsAvailable() {
+			continue
+		}
+
+		// Check if host matches capacity requirements
+		if machine.Spec.CapacityRequirements != nil {
+			if !host.MatchesRequirements(nil, machine.Spec.CapacityRequirements) {
+				continue
+			}
+		}
+
+		availableHosts = append(availableHosts, host)
+	}
+
+	if len(availableHosts) == 0 {
+		return nil
+	}
+
+	// Find the maximum priority among available hosts
+	maxPriority := int32(0)
+	for _, host := range availableHosts {
+		if priority := host.GetPriority(); priority > maxPriority {
+			maxPriority = priority
+		}
+	}
+
+	// Collect hosts with the highest priority
+	var highPriorityHosts []infrav1.ByoHost
+	for _, host := range availableHosts {
+		if host.GetPriority() == maxPriority {
+			highPriorityHosts = append(highPriorityHosts, host)
+		}
+	}
+
+	// Initialize round-robin index for this cluster if not exists
+	if r.roundRobinIndex == nil {
+		r.roundRobinIndex = make(map[string]int)
+	}
+	if _, exists := r.roundRobinIndex[clusterName]; !exists {
+		r.roundRobinIndex[clusterName] = 0
+	}
+
+	// Get current index and increment it (using high priority hosts)
+	currentIndex := r.roundRobinIndex[clusterName]
+	r.roundRobinIndex[clusterName] = (currentIndex + 1) % len(highPriorityHosts)
+
+	// Return the host at the current index from high priority hosts
+	return &highPriorityHosts[currentIndex]
+}
+
+// generateProviderID generates a standardized ProviderID for a ByoHost
+// This ensures consistency across all injection points (cloud-init, kubelet args, Node objects)
+func generateProviderID(host *infrav1.ByoHost) string {
+	return common.GenerateProviderID(host.Name)
+}
+
+// validateProviderID validates that a ProviderID matches the expected format
+func validateProviderID(providerID, hostName string) (bool, error) {
+	return common.ValidateProviderID(providerID, hostName)
 }

@@ -11,7 +11,7 @@ import (
 	"strings"
 
 	"github.com/pkg/errors"
-	"github.com/vmware-tanzu/cluster-api-provider-bringyourownhost/common"
+	"github.com/mensylisir/cluster-api-provider-bringyourownhost/common"
 	"sigs.k8s.io/yaml"
 )
 
@@ -84,9 +84,9 @@ func (se ScriptExecutor) Execute(bootstrapScript string) error {
 						extraArgs = make(map[string]interface{})
 					}
 
-					// Inject provider-id if not present
+					// Inject provider-id if not present using standardized format
 					if _, exists := extraArgs["provider-id"]; !exists {
-						extraArgs["provider-id"] = fmt.Sprintf("byoh://%s", se.Hostname)
+						extraArgs["provider-id"] = common.GenerateProviderID(se.Hostname)
 						nodeReg["kubeletExtraArgs"] = extraArgs
 						config["nodeRegistration"] = nodeReg
 

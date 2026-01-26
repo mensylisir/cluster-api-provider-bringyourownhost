@@ -6,9 +6,11 @@ package common
 import (
 	"bytes"
 	"compress/gzip"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 
 	"github.com/pkg/errors"
 )
@@ -65,4 +67,31 @@ func RemoveGlob(path string) error {
 		}
 	}
 	return nil
+}
+
+const (
+	// ProviderIDPrefix is the prefix for BYOH provider IDs
+	ProviderIDPrefix = "byoh://"
+)
+
+// GenerateProviderID generates a standardized ProviderID for a host
+// This ensures consistency across all injection points (cloud-init, kubelet args, Node objects)
+func GenerateProviderID(hostname string) string {
+	return fmt.Sprintf("%s%s", ProviderIDPrefix, hostname)
+}
+
+// ValidateProviderID validates that a ProviderID matches the expected format
+func ValidateProviderID(providerID, hostname string) (bool, error) {
+	if providerID == "" {
+		return false, errors.New("providerID is empty")
+	}
+
+	// Match "byoh://<hostname>" or "byoh://<hostname>/<suffix>"
+	pattern := fmt.Sprintf("^%s%s(/(.+))?$", ProviderIDPrefix, hostname)
+	match, err := regexp.MatchString(pattern, providerID)
+	if err != nil {
+		return false, err
+	}
+
+	return match, nil
 }

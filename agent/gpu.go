@@ -15,11 +15,12 @@ import (
 type GPUInfo struct {
 	Present bool
 	Model   string
+	Count   int
 }
 
 // GetGPUInfo detects if an NVIDIA GPU is present and attempts to identify the model
 func GetGPUInfo() GPUInfo {
-	info := GPUInfo{Present: false}
+	info := GPUInfo{Present: false, Count: 0}
 
 	// Check for NVIDIA GPU using lspci
 	// 10de is the vendor ID for NVIDIA
@@ -34,9 +35,24 @@ func GetGPUInfo() GPUInfo {
 	if len(output) > 0 {
 		info.Present = true
 		info.Model = parseGPUModel(string(output))
+		info.Count = countGPUs(string(output))
 	}
 
 	return info
+}
+
+// countGPUs counts the number of NVIDIA devices found in lspci output
+func countGPUs(output string) int {
+	scanner := bufio.NewScanner(strings.NewReader(output))
+	count := 0
+	for scanner.Scan() {
+		line := scanner.Text()
+		// Basic validation: ensure line contains NVIDIA
+		if strings.Contains(line, "NVIDIA") {
+			count++
+		}
+	}
+	return count
 }
 
 // parseGPUModel extracts a simplified model name from lspci output

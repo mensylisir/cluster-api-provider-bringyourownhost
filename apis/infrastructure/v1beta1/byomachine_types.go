@@ -4,6 +4,7 @@
 package v1beta1
 
 import (
+	"k8s.io/apimachinery/pkg/api/resource"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
@@ -89,6 +90,11 @@ type ByoMachineSpec struct {
 	// - true: Agent starts kube-proxy binary (binary deployment approach)
 	// +optional
 	ManageKubeProxy bool `json:"manageKubeProxy,omitempty"`
+
+	// CapacityRequirements specifies the minimum capacity required for this machine.
+	// The scheduler will only select hosts that have at least this capacity.
+	// +optional
+	CapacityRequirements map[corev1.ResourceName]resource.Quantity `json:"capacityRequirements,omitempty"`
 }
 
 // NetworkStatus provides information about one of a VM's networks.
