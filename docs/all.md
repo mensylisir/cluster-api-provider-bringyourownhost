@@ -1,198 +1,246 @@
-这份手册旨在让你从零开始，把一堆闲置的 Linux 服务器（裸机或虚拟机）变成一个**自动扩缩容**的私有云集群。
+# BYOH 对接与部署完整指南 (Complete Guide)
 
-我们把整个系统分为三个角色：
+这份文档旨在为您提供从零开始构建 BYOH (Bring Your Own Host) 私有云集群的完整操作手册。涵盖了环境准备、主机接入、以及两种核心部署模式（Kubeadm 与 Kubexm）的详细说明。
 
-1. **💻 开发机**：你的电脑，用来编译程序、打包镜像。
-2. **🧠 管理集群 (Management Cluster)**：控制中心（大脑），负责下令。
-3. **🖥️ 闲置主机池 (Host Pool)**：你的那堆裸机，负责干活。
+## 1. 架构角色
 
-------
+- **控制节点 (Management Cluster)**: 安装了 Cluster API 和 BYOH Controller 的 Kubernetes 集群（大脑）。
+- **计算节点 (Agent Host)**: 您的闲置 Linux 物理机或虚拟机，运行 `byoh-hostagent`（苦力）。
+- **业务集群 (Workload Cluster)**: 最终由 BYOH 创建出来的、运行用户应用的 Kubernetes 集群。
 
-### 第一步：在【开发机】上打包全家桶
+---
 
-**目标**：把代码变成镜像和安装包。
+## 2. 第一阶段：初始化控制节点
 
-1. **准备环境**：确保你已经按照之前的步骤配置好了 Docker 代理和 binfmt（用于支持双架构编译）。
+假设您已经有了一个 Kubernetes 集群（Kind/Minikube/现有集群）作为控制节点，并且已经准备好了所有 BYOH 组件文件。
 
-2. **一键打包**：
-   在项目根目录下执行：
+### 2.1 安装与配置核心组件 (离线环境准备)
 
-   ```bash
-   # 把镜像推送到你的仓库，并生成所有部署文件
-   # 注意：版本号 v0.1.0 要与 Makefile 默认保持一致，或者是你想要发布的版本
-   make build-release-artifacts IMG=docker.io/mensyli/cluster-api-byoh-controller:v0.1.0
-   ```
+在执行初始化之前，我们需要先准备好环境。假设您已经将所有必要文件下载到了 `~/wode` 目录。
 
-3. **检查成果**：
-   执行完后，你会看到一个 `_dist` 文件夹，里面必须有这几样东西：
+**第一步：安装 clusterctl 工具**
+```bash
+# 进入存放文件的目录
+cd ~/wode/cluster-api/
 
-   - `infrastructure-components.yaml`：**大脑的插件**（Controller 部署文件）。
-   - `byoh-hostagent-linux-amd64`：**主机的代理程序**（Agent 二进制）。
-   - `metadata.yaml`：**版本说明书**。
-   - `cluster-template.yaml`：**集群创建模板**。
+# 赋予执行权限
+chmod +x clusterctl-linux-amd64
 
-------
+# 移动到系统路径 (重命名为 clusterctl)
+cp clusterctl-linux-amd64 /usr/local/bin/clusterctl
 
-### 第二步：在【管理集群】安装大脑
+# 验证安装
+clusterctl version
+```
 
-**目标**：让控制中心学会怎么管理这些裸机。
+**第二步：配置本地仓库 (Overrides)**
+为了让 `clusterctl` 在离线环境下工作，我们需要将下载的 YAML 文件放置到特定的目录结构中，欺骗 `clusterctl` 让它以为这些是从网上下载的。
 
-1. **先装“护送程序” (cert-manager)**：
-   BYOH 必须依赖它来管理安全证书，不装的话控制器起不来。
+*(注意：请根据实际下载的版本调整路径中的 v1.4.4 和 v0.1.0)*
 
-   ```bash
-   kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.13.0/cert-manager.yaml
-   ```
+```bash
+# === 1. 配置 Cluster API 核心组件 (Core) ===
+mkdir -p ~/.cluster-api/overrides/cluster-api/v1.4.4/
+cp ~/wode/cluster-api/core-components.yaml ~/.cluster-api/overrides/cluster-api/v1.4.4/
 
-2. **让大脑认识你的 BYOH 插件**：
-   我们需要告诉 clusterctl（管理集群的工具）去哪里找你刚才生成的插件。
+# === 2. 配置 Bootstrap 组件 (Kubeadm) ===
+mkdir -p ~/.cluster-api/overrides/bootstrap-kubeadm/v1.4.4/
+cp ~/wode/cluster-api/bootstrap-components.yaml ~/.cluster-api/overrides/bootstrap-kubeadm/v1.4.4/
 
-   ```bash
-   # 创建配置目录（注意版本号要和 metadata.yaml 里的一致）
-   mkdir -p ~/.cluster-api/overrides/infrastructure-byoh/v0.1.0/
-   
-   # 把刚才生成的成品拷进去
-   cp _dist/infrastructure-components.yaml ~/.cluster-api/overrides/infrastructure-byoh/v0.1.0/
-   cp _dist/metadata.yaml ~/.cluster-api/overrides/infrastructure-byoh/v0.1.0/
-   ```
+# === 3. 配置 Control Plane 组件 (Kubeadm) ===
+mkdir -p ~/.cluster-api/overrides/control-plane-kubeadm/v1.4.4/
+cp ~/wode/cluster-api/control-plane-components.yaml ~/.cluster-api/overrides/control-plane-kubeadm/v1.4.4/
 
-3. **初始化大脑**：
+# === 4. 配置 BYOH Infrastructure 插件 ===
+mkdir -p ~/.cluster-api/overrides/infrastructure-byoh/v0.1.0/
+cp ~/wode/byoh/infrastructure-components.yaml ~/.cluster-api/overrides/infrastructure-byoh/v0.1.0/
+cp ~/wode/byoh/metadata.yaml ~/.cluster-api/overrides/infrastructure-byoh/v0.1.0/
+```
 
-   ```bash
-   clusterctl init --infrastructure byoh:v0.1.0
-   ```
+**第三步：执行初始化**
+现在环境已经准备就绪，我们可以命令 `clusterctl` 使用这些本地文件来初始化管理集群。
 
-   *验证：执行 `kubectl get pods -A`，看到 `cabyoh-system` 命名空间下的 pod 运行正常，大脑就装好了。*
+```bash
+clusterctl init \
+  --core cluster-api:v1.4.4 \
+  --bootstrap kubeadm:v1.4.4 \
+  --control-plane kubeadm:v1.4.4 \
+  --infrastructure byoh:v0.1.0
+```
 
-------
+*验证：执行 `kubectl get pods -A | grep byoh` 确认 Controller 正在运行。*
 
-### 第三步：在【闲置主机】上报到
+---
 
-**目标**：让你那几台裸机向大脑注册，加入“资源池”。
+## 3. 第二阶段：物理机接入 (Host Preparation)
 
-1. **准备主机**：找一台装好 Ubuntu 的干净机器。
+这是最关键的一步，我们需要让闲置机器向控制节点注册。
 
-2. **获取注册凭证 (Bootstrap Config)**：
-   在**管理集群**上运行以下命令，生成一个临时的注册配置文件：
+### 3.1 获取注册凭证 (Kubeconfig 怎么来？)
 
-   ```bash
-   # 获取 API Server 地址和 CA 证书
-   APISERVER=$(kubectl config view -ojsonpath='{.clusters[0].cluster.server}')
-   CA_CERT=$(kubectl config view --flatten -ojsonpath='{.clusters[0].cluster.certificate-authority-data}')
+Agent 需要一个 Kubeconfig 才能和控制节点通信。为了安全，我们通常创建一个权限受限的 `BootstrapKubeconfig`，但在测试环境中，您可以直接使用管理员 Kubeconfig，或者生成一个**专用注册配置**。
 
-   # 创建 BootstrapKubeconfig CR (告诉大脑允许注册)
-   cat <<EOF | kubectl apply -f -
-   apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-   kind: BootstrapKubeconfig
-   metadata:
-     name: bootstrap-kubeconfig
-     namespace: default
-   spec:
-     apiserver: "$APISERVER"
-     certificate-authority-data: "$CA_CERT"
-   EOF
+**方法 A：生成专用注册配置（推荐，更安全）**
+在**控制节点**上执行：
 
-   # 导出配置文件
-   kubectl get bootstrapkubeconfig bootstrap-kubeconfig -n default -o=jsonpath='{.status.bootstrapKubeconfigData}' > bootstrap-kubeconfig.conf
-   ```
+```bash
+# 1. 获取 API Server 地址
+APISERVER=$(kubectl config view -ojsonpath='{.clusters[0].cluster.server}')
+# 2. 获取 CA 证书数据
+CA_CERT=$(kubectl config view --flatten -ojsonpath='{.clusters[0].cluster.certificate-authority-data}')
 
-3. **运行 Agent**：
-   把 `_dist/byoh-hostagent-linux-amd64` 和刚才生成的 `bootstrap-kubeconfig.conf` 传到你的闲置主机上。
+# 3. 创建 BootstrapKubeconfig 资源（告诉 Controller 允许注册）
+cat <<EOF | kubectl apply -f -
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: BootstrapKubeconfig
+metadata:
+  name: bootstrap-kubeconfig
+  namespace: default
+spec:
+  apiserver: "$APISERVER"
+  certificate-authority-data: "$CA_CERT"
+EOF
 
-   ```bash
-   chmod +x byoh-hostagent-linux-amd64
-   
-   # 首次运行（进行注册）
-   sudo ./byoh-hostagent-linux-amd64 --bootstrap-kubeconfig bootstrap-kubeconfig.conf
-   ```
+# 4. 导出为文件 (这就是 Agent 需要的钥匙)
+kubectl get bootstrapkubeconfig bootstrap-kubeconfig -n default -o=jsonpath='{.status.bootstrapKubeconfigData}' > agent-bootstrap.conf
+```
 
-   *Agent 会自动检测你的 CPU、内存以及 **NVIDIA GPU**，并将这些信息上报给管理集群。*
+**方法 B：直接使用管理员配置（仅测试用）**
+```bash
+kubectl config view --flatten --minify > agent-bootstrap.conf
+```
 
-4. **在“大脑”上查收**：
-   回到你的管理集群，运行：
+### 3.2 传输文件到物理机
 
-   ```bash
-   kubectl get byohosts
-   ```
+假设您的闲置机器 IP 为 `192.168.1.100`，用户为 `root`。在控制节点（或您的操作机）上执行：
 
-   如果你看到主机的名字，状态是 **Available**，且 `AGE` 在增加，说明注册成功！
+```bash
+# 1. 传输 Agent 二进制程序
+scp ~/wode/byoh/byoh-hostagent-linux-amd64 root@192.168.1.100:/root/
 
-   *进阶：如果想让 Agent 开机自启，请参考 `hack/install-host-agent-service.sh` 脚本配置 Systemd 服务（需在首次注册成功生成 `~/.byoh/config` 后执行）。*
+# 2. 传输刚才生成的配置文件
+scp agent-bootstrap.conf root@192.168.1.100:/root/
+```
 
-------
+### 3.3 启动 Agent (在物理机上执行)
 
-### 第四步：部署【自动扩缩容】组件 (CAS)
+登录到闲置机器 `192.168.1.100`：
 
-**目标**：让系统学会“没地方跑 Pod 时，自动去池子里抓机器”。
+```bash
+# 1. 赋予执行权限
+chmod +x byoh-hostagent-linux-amd64
 
-1. **准备配置文件**：
-   你需要创建两个文件：`cluster-autoscaler-rbac.yaml` 和 `cluster-autoscaler-deployment.yaml`。
-   
-   *请参考 `docs/autoscaler.md` 中的详细配置内容，那里有完整的 YAML 示例。*
+# 2. 启动 Agent
+# --bootstrap-kubeconfig 指定刚才传过来的配置文件
+# --work-dir 指定工作目录（可选）
+sudo ./byoh-hostagent-linux-amd64 --bootstrap-kubeconfig ./agent-bootstrap.conf &
 
-2. **核心参数确认**：
-   在 `deployment.yaml` 中，确保启动参数包含：
+# (可选) 查看日志确认
+tail -f byoh-hostagent.log
+```
 
-   - `--cloud-provider=clusterapi`
-   - `--namespace=default` (你的 workload cluster 所在的 namespace)
-   - `--node-group-auto-discovery=clusterapi:clusterName=my-cool-cluster` (可选，或通过 annotation 自动发现)
+### 3.4 验证注册
 
-3. **部署**：
+回到**控制节点**，查看主机池：
 
-   ```bash
-   kubectl apply -f cluster-autoscaler-rbac.yaml
-   kubectl apply -f cluster-autoscaler-deployment.yaml
-   ```
+```bash
+kubectl get byohosts
+```
+如果看到状态为 `Available` 的主机，说明接入成功！
 
-------
+---
 
-### 第五步：创建你的第一个自动化集群
+## 4. 第三阶段：创建业务集群 (部署模式)
 
-**目标**：真正让 CA (Cluster API) 接管你的 BYOH。
+BYOH 支持两种节点引导模式。您可以在创建集群时的 `ByoMachineTemplate` 中进行选择。
 
-1. **生成集群 YAML**：
+### 模式一：Kubeadm 模式 (标准模式)
+这是默认模式。Agent 会自动下载并调用 `kubeadm join` 将节点加入集群。
 
-   ```bash
-   clusterctl generate cluster my-cool-cluster --flavor vm --kubernetes-version v1.25.5 > my-cluster.yaml
-   ```
+**适用场景**：
+- 标准 Kubernetes 部署。
+- 依赖 `kubeadm` 工具链。
 
-2. **开启自动伸缩开关**（重要！）：
-   打开 `my-cluster.yaml`，找到 `MachineDeployment` 这一节，在 `metadata.annotations` 下面加上这两行：
+**配置方法**：
+在 `ByoMachineTemplate` 中，`spec.template.spec.joinMode` 设置为 `kubeadm`（或留空，默认为 kubeadm）。
 
-   ```yaml
-   metadata:
-     annotations:
-       cluster.x-k8s.io/cluster-api-autoscaler-node-group-min-size: "1"
-       cluster.x-k8s.io/cluster-api-autoscaler-node-group-max-size: "5" # 你池子里有多少机器就写多少
-   ```
+```yaml
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: ByoMachineTemplate
+metadata:
+  name: my-cluster-worker
+spec:
+  template:
+    spec:
+      joinMode: kubeadm  # <--- 关键点
+      # ... 其他配置
+```
 
-3. **（可选）指定 GPU 机器**：
-   如果你想让这个集群只使用 GPU 机器，请修改 `ByoMachineTemplate` 的 selector：
+### 模式二：Kubexm (TLS Bootstrap) 模式
+这是一种轻量级模式。Agent 不使用 `kubeadm join`，而是直接安装 Kubernetes 二进制文件 (kubelet, kube-proxy)，并通过 TLS Bootstrap 协议直接向 API Server 申请证书加入集群。
 
-   ```yaml
-   spec:
-     template:
-       spec:
-         selector:
-           matchLabels:
-             nvidia.com/gpu.count: "1" # 只要有 GPU 的机器
-   ```
+**适用场景**：
+- 无法运行 kubeadm 的环境。
+- 需要更精细控制二进制安装过程。
+- 追求更快的节点启动速度。
 
-4. **应用配置**：
+**配置方法**：
+需要显式设置 `joinMode` 为 `tlsBootstrap`。
 
-   ```bash
-   kubectl apply -f my-cluster.yaml
-   ```
+```yaml
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: ByoMachineTemplate
+metadata:
+  name: my-cluster-worker-kubexm
+spec:
+  template:
+    spec:
+      joinMode: tlsBootstrap  # <--- 启用 Kubexm 模式
+      
+      # 可选配置:
+      downloadMode: online    # online (在线下载) 或 offline (使用本地二进制)
+      kubernetesVersion: v1.26.0
+      manageKubeProxy: true   # 是否由 Agent 管理 kube-proxy 进程
+```
 
-------
+> **⚠️ Kubexm 离线模式特别说明**：
+> 如果设置 `downloadMode: offline`，您必须提前手动将 k8s 二进制文件 (`kubelet`, `kube-proxy`, `kubectl`) 放置在物理机的 `/usr/local/bin/` 目录下，否则 Agent 启动会失败。
 
-### 傻瓜都能懂的原理（它是怎么“对接”的？）
+---
 
-1. **Pod 没地方跑了**：业务集群里突然来了很多流量，或者你提交了一个需要 GPU 的 AI 任务。
-2. **CAS (自动扩缩容组件) 发现了**：它看到 Pod 在排队，Pending 了。
-3. **Cluster API (核心) 响应了**：它发现 MachineDeployment 允许扩容，于是创建一个新的 `Machine` 对象。
-4. **BYOH Controller (大脑插件) 动手了**：它看到新 `Machine` 诞生，且如果有 GPU 需求，它会去 `ByoHost` 池子里筛选带有 `nvidia.com/gpu.count` 标签的空闲机器。
-5. **绑定与安装**：找到机器后，Controller 把它们**绑定**。Agent 收到指令，自动执行 `kubeadm join`。
-6. **成功扩容**：几分钟后，新节点 Ready，你的 AI 任务开始运行。
+## 5. 第四阶段：部署自动扩缩容 (Autoscaler)
 
-**总结一句话：你只管往池子里加机器（跑 Agent），剩下的扩容缩容，全自动。**
+当业务集群创建成功（无论是 Kubeadm 还是 Kubexm 模式），您都可以部署 Cluster Autoscaler 来实现自动化管理。
+
+### 5.1 部署 Autoscaler
+使用 Helm 或 YAML 部署，关键参数如下：
+
+- `cloudProvider`: `clusterapi`
+- `autoDiscovery.clusterName`: `<您的业务集群名>`
+- `image.tag`: 与您的 K8s 版本匹配（例如 `v1.26.0`）
+
+### 5.2 启用扩缩容
+在 `MachineDeployment` 对象中添加注解：
+
+```yaml
+metadata:
+  annotations:
+    cluster.x-k8s.io/cluster-api-autoscaler-node-group-min-size: "1"
+    cluster.x-k8s.io/cluster-api-autoscaler-node-group-max-size: "10"
+```
+
+---
+
+## 常见问题排查
+
+1. **Agent 启动报错 "connection refused"**
+   - 检查 `agent-bootstrap.conf` 中的 API Server 地址物理机是否能 ping 通。
+   - 检查控制节点的防火墙是否放行了 API Server 端口（通常是 6443）。
+
+2. **Kubexm 模式下节点一直无法 Ready**
+   - 检查物理机上的 `kubelet` 服务状态：`systemctl status kubelet`。
+   - 检查是否缺少 CNI 插件（Kubexm 模式通常需要手动或通过 DaemonSet 安装 CNI）。
+
+3. **Autoscaler 不扩容**
+   - 检查 Pod 是否处于 Pending 状态。
+   - 检查 `ByoHost` 池子里是否还有处于 `Available` 状态的空闲机器。
