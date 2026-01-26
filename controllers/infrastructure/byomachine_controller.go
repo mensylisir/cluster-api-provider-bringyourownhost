@@ -37,13 +37,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	"github.com/go-logr/logr"
-	"github.com/mensylisir/cluster-api-provider-bringyourownhost/common"
 	infrav1 "github.com/mensylisir/cluster-api-provider-bringyourownhost/apis/infrastructure/v1beta1"
+	"github.com/mensylisir/cluster-api-provider-bringyourownhost/common"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	"sigs.k8s.io/cluster-api/util/annotations"
+	"sigs.k8s.io/yaml"
 )
 
 const (
@@ -81,7 +82,7 @@ type ByoMachineReconciler struct {
 // lockInfo holds lease lock information for a ByoHost
 type lockInfo struct {
 	Holder      string    `json:"holder"`
-	AcquireTime  time.Time `json:"acquireTime"`
+	AcquireTime time.Time `json:"acquireTime"`
 	MachineName string    `json:"machineName"`
 }
 
@@ -1029,18 +1030,52 @@ func (r *ByoMachineReconciler) createBootstrapSecretTLSBootstrap(ctx context.Con
 }
 
 // extractCAFromKubeconfig extracts CA data from a kubeconfig file
+// Uses proper YAML parsing to extract certificate-authority-data from clusters
 func extractCAFromKubeconfig(kubeconfigData []byte) []byte {
-	// Simple extraction - look for certificate-authority-data in the kubeconfig
+	// Define a minimal kubeconfig structure for parsing
+	type kubeconfigCluster struct {
+		Cluster struct {
+			CertificateAuthorityData []byte `yaml:"certificate-authority-data"`
+		} `yaml:"cluster"`
+	}
+
+	type kubeconfig struct {
+		Clusters []kubeconfigCluster `yaml:"clusters"`
+	}
+
+	var config kubeconfig
+	if err := yaml.Unmarshal(kubeconfigData, &config); err != nil {
+		// Fallback to simple extraction if YAML parsing fails
+		return extractCAFromKubeconfigSimple(kubeconfigData)
+	}
+
+	// Look for certificate-authority-data in any cluster
+	for _, cluster := range config.Clusters {
+		if len(cluster.Cluster.CertificateAuthorityData) > 0 {
+			return cluster.Cluster.CertificateAuthorityData
+		}
+	}
+
+	return nil
+}
+
+// extractCAFromKubeconfigSimple provides a simple fallback extraction method
+// for kubeconfig files that may not parse correctly with the structured approach
+func extractCAFromKubeconfigSimple(kubeconfigData []byte) []byte {
 	dataStr := string(kubeconfigData)
-	// Try to parse as YAML and extract CA data
-	if strings.Contains(dataStr, "certificate-authority-data:") {
-		lines := strings.Split(dataStr, "\n")
-		for i, line := range lines {
-			if strings.Contains(line, "certificate-authority-data:") && i+1 < len(lines) {
-				caBase64 := strings.TrimSpace(lines[i+1])
-				if decoded, err := base64.StdEncoding.DecodeString(caBase64); err == nil {
-					return decoded
-				}
+	if !strings.Contains(dataStr, "certificate-authority-data:") {
+		return nil
+	}
+
+	lines := strings.Split(dataStr, "\n")
+	for i, line := range lines {
+		if strings.Contains(line, "certificate-authority-data:") && i+1 < len(lines) {
+			caBase64 := strings.TrimSpace(lines[i+1])
+			// Remove potential quotes and extra whitespace
+			caBase64 = strings.Trim(caBase64, "\"'\"")
+
+			if decoded, err := base64.StdEncoding.DecodeString(caBase64); err == nil {
+				return decoded
 			}
 		}
 	}
@@ -1078,7 +1113,7 @@ func (r *ByoMachineReconciler) tryAcquireLease(ctx context.Context, byoHost *inf
 		var currentLock lockInfo
 		if err := json.Unmarshal([]byte(leaseStr), &currentLock); err == nil {
 			// Check if lease has expired
-			if currentLock.AcquireTime.Add(time.Duration(HostLeaseTimeoutSeconds)*time.Second).After(now) {
+			if currentLock.AcquireTime.Add(time.Duration(HostLeaseTimeoutSeconds) * time.Second).After(now) {
 				// Lease is still valid and held by someone
 				return false, nil
 			}
@@ -1200,12 +1235,15 @@ func (r *ByoMachineReconciler) selectHostForClaim(hostsList []infrav1.ByoHost, c
 		r.roundRobinIndex[clusterName] = 0
 	}
 
-	// Get current index and increment it (using high priority hosts)
+	// Get current index and return the host (using high priority hosts)
 	currentIndex := r.roundRobinIndex[clusterName]
+	selectedHost := &highPriorityHosts[currentIndex]
+
+	// Increment index for next selection (wrap around)
 	r.roundRobinIndex[clusterName] = (currentIndex + 1) % len(highPriorityHosts)
 
-	// Return the host at the current index from high priority hosts
-	return &highPriorityHosts[currentIndex]
+	// Return the selected host
+	return selectedHost
 }
 
 // generateProviderID generates a standardized ProviderID for a ByoHost

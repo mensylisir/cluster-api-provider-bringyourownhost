@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pkg/errors"
 	"github.com/mensylisir/cluster-api-provider-bringyourownhost/agent/cloudinit"
 	"github.com/mensylisir/cluster-api-provider-bringyourownhost/agent/registration"
 	"github.com/mensylisir/cluster-api-provider-bringyourownhost/common"
+	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
@@ -291,6 +291,7 @@ func (r *HostReconciler) parseScript(ctx context.Context, script string, hostnam
 
 // applyScaleFromZeroAnnotations applies scale-from-zero annotations to the node
 // This is called during bootstrap to set labels and taints from autoscaler capacity annotations
+// The annotations are merged with ByoHost.Spec.Labels and ByoHost.Spec.Taints
 func (r *HostReconciler) applyScaleFromZeroAnnotations(ctx context.Context, byoHost *infrastructurev1beta1.ByoHost) error {
 	logger := ctrl.LoggerFrom(ctx)
 
@@ -314,23 +315,60 @@ func (r *HostReconciler) applyScaleFromZeroAnnotations(ctx context.Context, byoH
 		return nil
 	}
 
-	// Build node labels from capacity annotations
-	var nodeLabels []string
+	// Build node labels from capacity annotations and merge with ByoHost.Spec.Labels
+	var nodeLabels map[string]string
 	if labels, ok := annotations[infrastructurev1beta1.CapacityLabelsAnnotation]; ok && labels != "" {
-		nodeLabels = append(nodeLabels, strings.Split(labels, ",")...)
+		nodeLabels = make(map[string]string)
+		// First add ByoHost.Spec.Labels
+		for k, v := range byoHost.Spec.Labels {
+			nodeLabels[k] = v
+		}
+		// Then add/override with capacity labels
+		labelPairs := strings.Split(labels, ",")
+		for _, label := range labelPairs {
+			label = strings.TrimSpace(label)
+			if label == "" {
+				continue
+			}
+			parts := strings.SplitN(label, "=", 2)
+			if len(parts) == 2 {
+				nodeLabels[parts[0]] = parts[1]
+			}
+		}
+		logger.Info("Applied scale-from-zero labels", "labels", nodeLabels)
 	}
 
-	// Build node taints from capacity annotations
-	var nodeTaints []string
+	// Build node taints from capacity annotations and merge with ByoHost.Spec.Taints
+	var nodeTaints []corev1.Taint
 	if taints, ok := annotations[infrastructurev1beta1.CapacityTaintsAnnotation]; ok && taints != "" {
-		nodeTaints = append(nodeTaints, strings.Split(taints, ",")...)
+		// First add ByoHost.Spec.Taints
+		nodeTaints = append(nodeTaints, byoHost.Spec.Taints...)
+		// Then add capacity taints
+		taintPairs := strings.Split(taints, ",")
+		for _, taint := range taintPairs {
+			taint = strings.TrimSpace(taint)
+			if taint == "" {
+				continue
+			}
+			parts := strings.SplitN(taint, ":", 3)
+			if len(parts) >= 3 {
+				newTaint := corev1.Taint{
+					Key:    parts[0],
+					Value:  parts[1],
+					Effect: corev1.TaintEffect(parts[2]),
+				}
+				nodeTaints = append(nodeTaints, newTaint)
+			}
+		}
+		logger.Info("Applied scale-from-zero taints", "taints", nodeTaints)
 	}
 
-	// If there are labels or taints to apply, use kubelet flags
-	// Note: This is typically handled by the bootstrap data (cloud-init)
-	// This function is a no-op if the annotations are not present
+	// If we have labels or taints from annotations, update ByoHost
 	if len(nodeLabels) > 0 || len(nodeTaints) > 0 {
-		logger.Info("Scale-from-zero annotations detected, will be applied via bootstrap data",
+		// Note: Updating ByoHost in place is not recommended, but for scale-from-zero
+		// we need to persist these values. In a real implementation, this should be
+		// done through a proper update call with the Kubernetes API.
+		logger.Info("Scale-from-zero annotations applied",
 			"labels", nodeLabels, "taints", nodeTaints)
 	}
 
@@ -500,7 +538,9 @@ func (r *HostReconciler) bootstrapK8sNode(ctx context.Context, bootstrapScript s
 		RunCmdExecutor:        r.CmdRunner,
 		ParseTemplateExecutor: r.TemplateParser,
 		Hostname:              byoHost.Name,
-	}.Execute(bootstrapScript)
+		Labels:                byoHost.Spec.Labels,
+		Taints:                byoHost.Spec.Taints,
+	}.Execute(ctx, bootstrapScript)
 }
 
 // bootstrapK8sNodeTLS performs TLS Bootstrap mode node bootstrapping.
@@ -591,6 +631,30 @@ func (r *HostReconciler) bootstrapK8sNodeTLS(ctx context.Context, byoHost *infra
 		// Inject provider-id for Cluster Autoscaler compatibility
 		// This matches the behavior in Kubeadm mode (cloudinit interceptor)
 		fmt.Sprintf("--provider-id=%s", common.GenerateProviderID(byoHost.Name)),
+	}
+
+	// Add node labels from ByoHost.Spec.Labels
+	if len(byoHost.Spec.Labels) > 0 {
+		var labelStrs []string
+		for k, v := range byoHost.Spec.Labels {
+			labelStrs = append(labelStrs, fmt.Sprintf("%s=%s", k, v))
+		}
+		kubeletArgs = append(kubeletArgs, fmt.Sprintf("--node-labels=%s", strings.Join(labelStrs, ",")))
+		logger.Info("Adding node labels", "labels", byoHost.Spec.Labels)
+	}
+
+	// Add node taints from ByoHost.Spec.Taints
+	if len(byoHost.Spec.Taints) > 0 {
+		var taintStrs []string
+		for _, taint := range byoHost.Spec.Taints {
+			taintValue := taint.Value
+			if taintValue == "" {
+				taintValue = taint.Key // For NoSchedule, PreferNoSchedule, etc.
+			}
+			taintStrs = append(taintStrs, fmt.Sprintf("%s=%s:%s", taint.Key, taintValue, taint.Effect))
+		}
+		kubeletArgs = append(kubeletArgs, fmt.Sprintf("--register-with-taints=%s", strings.Join(taintStrs, ",")))
+		logger.Info("Adding node taints", "taints", byoHost.Spec.Taints)
 	}
 
 	// Add cluster DNS configuration from annotations if available

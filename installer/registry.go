@@ -4,9 +4,13 @@
 package installer
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 )
+
+// ErrBundleInstallerAlreadyExists is returned when a bundle installer already exists
+var ErrBundleInstallerAlreadyExists = errors.New("bundle installer already exists")
 
 type osk8sInstaller interface{}
 type k8sInstallerMap map[string]osk8sInstaller
@@ -38,7 +42,7 @@ func newRegistry() registry {
 }
 
 // AddBundleInstaller adds a bundle installer to the registry
-func (r *registry) AddBundleInstaller(os, k8sVer string) {
+func (r *registry) AddBundleInstaller(os, k8sVer string) error {
 	var empty interface{}
 
 	if _, ok := r.osk8sInstallerMap[os]; !ok {
@@ -46,10 +50,11 @@ func (r *registry) AddBundleInstaller(os, k8sVer string) {
 	}
 
 	if _, alreadyExist := r.osk8sInstallerMap[os][k8sVer]; alreadyExist {
-		panic(fmt.Sprintf("%v %v already exists", os, k8sVer))
+		return ErrBundleInstallerAlreadyExists
 	}
 
 	r.osk8sInstallerMap[os][k8sVer] = empty
+	return nil
 }
 
 // AddOsFilter adds an OS filter to the filtered bundle list of registry
@@ -110,14 +115,19 @@ func (r *registry) ResolveOsToOsBundle(os string) string {
 func GetSupportedRegistry() registry {
 	reg := newRegistry()
 
+	// Helper to add bundle installer, ignoring duplicate errors during initialization
+	addBundle := func(os, k8sVer string) {
+		_ = reg.AddBundleInstaller(os, k8sVer)
+	}
+
 	{
 		// Ubuntu
 
 		// Ubuntu 20.04
 		linuxDistro := "Ubuntu_20.04.1_x86-64"
-		reg.AddBundleInstaller(linuxDistro, "v1.24.*")
-		reg.AddBundleInstaller(linuxDistro, "v1.25.*")
-		reg.AddBundleInstaller(linuxDistro, "v1.26.*")
+		addBundle(linuxDistro, "v1.24.*")
+		addBundle(linuxDistro, "v1.25.*")
+		addBundle(linuxDistro, "v1.26.*")
 
 		reg.AddK8sFilter("v1.24.*")
 		reg.AddK8sFilter("v1.25.*")
@@ -127,16 +137,16 @@ func GetSupportedRegistry() registry {
 
 		// Ubuntu 20.04 ARM64
 		linuxDistroArm := "Ubuntu_20.04.1_aarch64"
-		reg.AddBundleInstaller(linuxDistroArm, "v1.24.*")
-		reg.AddBundleInstaller(linuxDistroArm, "v1.25.*")
-		reg.AddBundleInstaller(linuxDistroArm, "v1.26.*")
+		addBundle(linuxDistroArm, "v1.24.*")
+		addBundle(linuxDistroArm, "v1.25.*")
+		addBundle(linuxDistroArm, "v1.26.*")
 		reg.AddOsFilter("Ubuntu_20.04.*_aarch64", linuxDistroArm)
 
 		// Ubuntu 24.04
 		linuxDistro24 := "Ubuntu_24.04.1_x86-64"
 		for i := 27; i <= 35; i++ {
 			version := fmt.Sprintf("v1.%d.*", i)
-			reg.AddBundleInstaller(linuxDistro24, version)
+			addBundle(linuxDistro24, version)
 			reg.AddK8sFilter(version)
 		}
 
@@ -144,7 +154,7 @@ func GetSupportedRegistry() registry {
 		linuxDistro22 := "Ubuntu_22.04.1_x86-64"
 		for i := 25; i <= 35; i++ {
 			version := fmt.Sprintf("v1.%d.*", i)
-			reg.AddBundleInstaller(linuxDistro22, version)
+			addBundle(linuxDistro22, version)
 			reg.AddK8sFilter(version)
 		}
 		reg.AddOsFilter("Ubuntu_22.04.*_x86-64", linuxDistro22)
@@ -155,7 +165,7 @@ func GetSupportedRegistry() registry {
 		linuxDistro24Arm := "Ubuntu_24.04.1_aarch64"
 		for i := 27; i <= 35; i++ {
 			version := fmt.Sprintf("v1.%d.*", i)
-			reg.AddBundleInstaller(linuxDistro24Arm, version)
+			addBundle(linuxDistro24Arm, version)
 		}
 		reg.AddOsFilter("Ubuntu_24.04.*_aarch64", linuxDistro24Arm)
 
@@ -163,7 +173,7 @@ func GetSupportedRegistry() registry {
 		linuxDistro22Arm := "Ubuntu_22.04.1_aarch64"
 		for i := 25; i <= 35; i++ {
 			version := fmt.Sprintf("v1.%d.*", i)
-			reg.AddBundleInstaller(linuxDistro22Arm, version)
+			addBundle(linuxDistro22Arm, version)
 		}
 		reg.AddOsFilter("Ubuntu_22.04.*_aarch64", linuxDistro22Arm)
 	}

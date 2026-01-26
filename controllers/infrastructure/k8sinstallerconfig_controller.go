@@ -9,9 +9,9 @@ import (
 	"strings"
 
 	"github.com/go-logr/logr"
-	"github.com/pkg/errors"
 	infrav1 "github.com/mensylisir/cluster-api-provider-bringyourownhost/apis/infrastructure/v1beta1"
 	"github.com/mensylisir/cluster-api-provider-bringyourownhost/installer"
+	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -355,7 +355,8 @@ func (r *K8sInstallerConfigReconciler) ByoMachineToK8sInstallerConfigMapFunc(o c
 
 	m, ok := o.(*infrav1.ByoMachine)
 	if !ok {
-		panic(fmt.Sprintf("Expected a ByoMachine but got a %T", o))
+		logger.Error(nil, "Expected a ByoMachine but got a different type", "type", fmt.Sprintf("%T", o))
+		return []ctrl.Request{}
 	}
 	m.GetObjectKind().SetGroupVersionKind(infrav1.GroupVersion.WithKind("ByoMachine"))
 

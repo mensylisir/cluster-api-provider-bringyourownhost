@@ -86,6 +86,17 @@ spec:
                     spec:
                       description: Spec is the specification of the desired behavior of the machine.
                       properties:
+                        capacityRequirements:
+                          additionalProperties:
+                            anyOf:
+                              - type: integer
+                              - type: string
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          description: |-
+                            CapacityRequirements specifies the minimum capacity required for this machine.
+                            The scheduler will only select hosts that have at least this capacity.
+                          type: object
                         downloadMode:
                           description: |-
                             DownloadMode defines how to obtain K8s binaries.

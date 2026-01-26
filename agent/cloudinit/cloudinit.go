@@ -10,8 +10,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/pkg/errors"
 	"github.com/mensylisir/cluster-api-provider-bringyourownhost/common"
+	"github.com/pkg/errors"
+	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/yaml"
 )
 
@@ -21,6 +22,8 @@ type ScriptExecutor struct {
 	RunCmdExecutor        ICmdRunner
 	ParseTemplateExecutor ITemplateParser
 	Hostname              string
+	Labels                map[string]string
+	Taints                []corev1.Taint
 }
 
 type bootstrapConfig struct {
@@ -42,7 +45,7 @@ type Files struct {
 //   - parse the script to get the cloudinit data
 //   - execute the write_files directive
 //   - execute the run_cmd directive
-func (se ScriptExecutor) Execute(bootstrapScript string) error {
+func (se ScriptExecutor) Execute(ctx context.Context, bootstrapScript string) error {
 	cloudInitData := bootstrapConfig{}
 	if err := yaml.Unmarshal([]byte(bootstrapScript), &cloudInitData); err != nil {
 		return errors.Wrapf(err, "error parsing write_files action: %s", bootstrapScript)
@@ -67,7 +70,7 @@ func (se ScriptExecutor) Execute(bootstrapScript string) error {
 		}
 
 		// Phase 18: Auto-Scaling Integration
-		// Intercept kubeadm config to inject ProviderID
+		// Intercept kubeadm config to inject ProviderID, labels, and taints
 		if se.Hostname != "" && (strings.Contains(cloudInitData.FilesToWrite[i].Path, "kubeadm") || strings.HasSuffix(cloudInitData.FilesToWrite[i].Path, ".yaml")) {
 			// Try to parse as YAML and check for nodeRegistration
 			var config map[string]interface{}
@@ -87,14 +90,41 @@ func (se ScriptExecutor) Execute(bootstrapScript string) error {
 					// Inject provider-id if not present using standardized format
 					if _, exists := extraArgs["provider-id"]; !exists {
 						extraArgs["provider-id"] = common.GenerateProviderID(se.Hostname)
-						nodeReg["kubeletExtraArgs"] = extraArgs
-						config["nodeRegistration"] = nodeReg
+					}
 
-						// Marshal back
-						newContent, err := yaml.Marshal(config)
-						if err == nil {
-							cloudInitData.FilesToWrite[i].Content = string(newContent)
+					// Inject node-labels from ByoHost.Spec.Labels
+					if len(se.Labels) > 0 {
+						if _, exists := extraArgs["node-labels"]; !exists {
+							var labelStrs []string
+							for k, v := range se.Labels {
+								labelStrs = append(labelStrs, fmt.Sprintf("%s=%s", k, v))
+							}
+							extraArgs["node-labels"] = strings.Join(labelStrs, ",")
 						}
+					}
+
+					// Inject register-with-taints from ByoHost.Spec.Taints
+					if len(se.Taints) > 0 {
+						if _, exists := extraArgs["register-with-taints"]; !exists {
+							var taintStrs []string
+							for _, taint := range se.Taints {
+								taintValue := taint.Value
+								if taintValue == "" {
+									taintValue = taint.Key
+								}
+								taintStrs = append(taintStrs, fmt.Sprintf("%s=%s:%s", taint.Key, taintValue, taint.Effect))
+							}
+							extraArgs["register-with-taints"] = strings.Join(taintStrs, ",")
+						}
+					}
+
+					nodeReg["kubeletExtraArgs"] = extraArgs
+					config["nodeRegistration"] = nodeReg
+
+					// Marshal back
+					newContent, err := yaml.Marshal(config)
+					if err == nil {
+						cloudInitData.FilesToWrite[i].Content = string(newContent)
 					}
 				}
 			}
@@ -107,7 +137,7 @@ func (se ScriptExecutor) Execute(bootstrapScript string) error {
 	}
 
 	for _, cmd := range cloudInitData.CommandsToExecute {
-		err := se.RunCmdExecutor.RunCmd(context.TODO(), cmd)
+		err := se.RunCmdExecutor.RunCmd(ctx, cmd)
 		if err != nil {
 			return errors.Wrap(err, fmt.Sprintf("Error running the command %s", cmd))
 		}

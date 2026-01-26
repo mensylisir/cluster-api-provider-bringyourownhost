@@ -4,6 +4,7 @@
 package cloudinit_test
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"io/fs"
@@ -11,11 +12,11 @@ import (
 	"path"
 	"strconv"
 
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
 	"github.com/mensylisir/cluster-api-provider-bringyourownhost/agent/cloudinit"
 	"github.com/mensylisir/cluster-api-provider-bringyourownhost/agent/registration"
 	"github.com/mensylisir/cluster-api-provider-bringyourownhost/common"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
 var (
@@ -51,7 +52,7 @@ content: %s
 runCmd:
 - echo -n '%s' > %s`, fileName, fileOriginContent, fileNewContent, fileName)
 
-		err := scriptExecutor.Execute(cloudInitScript)
+		err := scriptExecutor.Execute(context.Background(), cloudInitScript)
 		Expect(err).ToNot(HaveOccurred())
 
 		fileContents, errFileContents := os.ReadFile(fileName)
@@ -64,7 +65,7 @@ runCmd:
 runCmd:
 - foo`
 
-		err := scriptExecutor.Execute(cloudInitScript)
+		err := scriptExecutor.Execute(context.Background(), cloudInitScript)
 		Expect(err).To(HaveOccurred())
 	})
 
@@ -84,7 +85,7 @@ runCmd:
   content: %s
   append: %v`, fileName, strconv.FormatInt(int64(filePermission), 8), fileAppendContent, isAppend)
 
-		err = scriptExecutor.Execute(cloudInitScript)
+		err = scriptExecutor.Execute(context.Background(), cloudInitScript)
 		Expect(err).ToNot(HaveOccurred())
 
 		fileContents, errFileContents := os.ReadFile(fileName)
@@ -106,7 +107,7 @@ runCmd:
   content: %s
   encoding: base64`, fileName, fileBase64Content)
 
-		err := scriptExecutor.Execute(cloudInitScript)
+		err := scriptExecutor.Execute(context.Background(), cloudInitScript)
 		Expect(err).ToNot(HaveOccurred())
 
 		fileContents, err := os.ReadFile(fileName)
@@ -126,7 +127,7 @@ runCmd:
   encoding: gzip+base64
   content: %s`, fileName, fileGzipBase64Content)
 
-		err = scriptExecutor.Execute(cloudInitScript)
+		err = scriptExecutor.Execute(context.Background(), cloudInitScript)
 		Expect(err).ToNot(HaveOccurred())
 
 		fileContents, err := os.ReadFile(fileName)
@@ -143,7 +144,7 @@ runCmd:
 - path: %s
   content: %s`, fileName, fileContent)
 
-		err := scriptExecutor.Execute(cloudInitScript)
+		err := scriptExecutor.Execute(context.Background(), cloudInitScript)
 		Expect(err).ToNot(HaveOccurred())
 
 		fileContents, err := os.ReadFile(fileName)
@@ -154,7 +155,7 @@ runCmd:
 	It("should return error for invalid template content", func() {
 		cloudInitScript := "invalid-content"
 
-		err := scriptExecutor.Execute(cloudInitScript)
+		err := scriptExecutor.Execute(context.Background(), cloudInitScript)
 		Expect(err).To(HaveOccurred())
 	})
 

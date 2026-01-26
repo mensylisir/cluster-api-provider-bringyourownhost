@@ -96,6 +96,17 @@ spec:
                       type: string
                   type: object
                   x-kubernetes-map-type: atomic
+                capacity:
+                  additionalProperties:
+                    anyOf:
+                      - type: integer
+                      - type: string
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                  description: |-
+                    Capacity represents the total resources of the host.
+                    This is used by the autoscaler for scale-from-zero and capacity-aware scheduling.
+                  type: object
                 downloadMode:
                   description: |-
                     DownloadMode defines how to obtain K8s binaries.
@@ -165,6 +176,13 @@ spec:
                     KubernetesVersion is the K8s version for binaries (only for TLSBootstrap mode).
                     If not specified, it will be derived from the Machine or Cluster spec.
                   type: string
+                labels:
+                  additionalProperties:
+                    type: string
+                  description: |-
+                    Labels to be applied to the node when it joins the cluster.
+                    This allows for custom scheduling and selection of nodes based on workload requirements.
+                  type: object
                 manageKubeProxy:
                   description: |-
                     ManageKubeProxy determines whether Agent manages kube-proxy.
@@ -172,6 +190,45 @@ spec:
                     - false: kube-proxy runs as DaemonSet (cloud native approach)
                     - true: Agent starts kube-proxy binary (binary deployment approach)
                   type: boolean
+                priority:
+                  description: |-
+                    Priority determines the preference for selecting this host when multiple
+                    hosts are available. Higher values indicate higher priority.
+                    Defaults to 0.
+                  format: int32
+                  type: integer
+                taints:
+                  description: |-
+                    Taints to be applied to the node when it joins the cluster.
+                    This allows for scheduling workloads that tolerate specific taints.
+                  items:
+                    description: |-
+                      The node this Taint is attached to has the "effect" on
+                      any pod that does not tolerate the Taint.
+                    properties:
+                      effect:
+                        description: |-
+                          Required. The effect of the taint on pods
+                          that do not tolerate the taint.
+                          Valid effects are NoSchedule, PreferNoSchedule and NoExecute.
+                        type: string
+                      key:
+                        description: Required. The taint key to be applied to a node.
+                        type: string
+                      timeAdded:
+                        description: |-
+                          TimeAdded represents the time at which the taint was added.
+                          It is only written for NoExecute taints.
+                        format: date-time
+                        type: string
+                      value:
+                        description: The taint value corresponding to the taint key.
+                        type: string
+                    required:
+                      - effect
+                      - key
+                    type: object
+                  type: array
                 uninstallationScript:
                   description: |-
                     UninstallationScript is an optional field to store uninstall script
