@@ -2,7 +2,14 @@
 
 这份文档旨在为您提供从零开始构建 BYOH (Bring Your Own Host) 私有云集群的完整操作手册。涵盖了环境准备、主机接入、以及两种核心部署模式（Kubeadm 与 Kubexm）的详细说明。
 
-## 1. 架构角色
+## 0. 验证环境与工具（常见问题）
+
+**Q: 为什么运行 `clusterctl version` 会卡住？**
+A: `clusterctl` 在输出本地版本后，会默认尝试连接 GitHub 检查是否有新版本，还会连接集群获取服务端版本。
+- 如果您看到类似 `clusterctl version: &version.Info{...}` 的输出后卡住，说明本地版本已成功打印。
+- 此时卡住是因为无法连接 GitHub（离线环境），您可以直接按 **Ctrl+C** 结束命令，不影响使用。
+
+## 1. 准备离线资源架构角色
 
 - **控制节点 (Management Cluster)**: 安装了 Cluster API 和 BYOH Controller 的 Kubernetes 集群（大脑）。
 - **计算节点 (Agent Host)**: 您的闲置 Linux 物理机或虚拟机，运行 `byoh-hostagent`（苦力）。
