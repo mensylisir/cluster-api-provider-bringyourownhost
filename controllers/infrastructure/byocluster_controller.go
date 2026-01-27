@@ -45,7 +45,7 @@ type ByoClusterReconciler struct {
 //+kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=byoclusters,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=byoclusters/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=byoclusters/finalizers,verbs=update
-// +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=clusters;clusters/status,verbs=get;list;watch
+// +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=clusters;clusters/status,verbs=get;list;watch;update;patch
 
 // Reconcile handles the byo cluster reconciliations
 func (r *ByoClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result, reterr error) {
@@ -104,7 +104,7 @@ func (r *ByoClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	// Handle non-deleted clusters
-	return r.reconcileNormal(ctx, byoCluster)
+	return r.reconcileNormal(ctx, byoCluster, cluster)
 }
 
 func patchByoCluster(ctx context.Context, patchHelper *patch.Helper, byoCluster *infrav1.ByoCluster) error {
@@ -167,7 +167,7 @@ func (r ByoClusterReconciler) reconcileDelete(ctx context.Context, byoCluster *i
 	return ctrl.Result{}, nil
 }
 
-func (r ByoClusterReconciler) reconcileNormal(ctx context.Context, byoCluster *infrav1.ByoCluster) (reconcile.Result, error) {
+func (r ByoClusterReconciler) reconcileNormal(ctx context.Context, byoCluster *infrav1.ByoCluster, cluster *clusterv1.Cluster) (reconcile.Result, error) {
 	// If the ByoCluster doesn't have our finalizer, add it.
 	controllerutil.AddFinalizer(byoCluster, infrav1.ClusterFinalizer)
 
@@ -176,6 +176,30 @@ func (r ByoClusterReconciler) reconcileNormal(ctx context.Context, byoCluster *i
 	}
 
 	byoCluster.Status.Ready = true
+
+	// Check if this is an "unmanaged" cluster (no ControlPlaneRef), typical for BYOH/binary setups
+	// If so, we must manually patch the CAPI Cluster status to unblock downstream controllers
+	if cluster.Spec.ControlPlaneRef == nil {
+		logger := log.FromContext(ctx)
+
+		// Initialize the patch helper for the CAPI Cluster
+		patchHelper, err := patch.NewHelper(cluster, r.Client)
+		if err != nil {
+			return reconcile.Result{}, errors.Wrap(err, "failed to init patch helper for Cluster")
+		}
+
+		// Set the required status fields to trick CAPI into thinking the control plane is ready
+		cluster.Status.InfrastructureReady = true
+		cluster.Status.ControlPlaneInitialized = true
+		cluster.Status.ControlPlaneReady = true
+
+		// Apply the patch
+		if err := patchHelper.Patch(ctx, cluster); err != nil {
+			logger.Error(err, "failed to patch Cluster status for unmanaged control plane")
+			return reconcile.Result{}, err
+		}
+		logger.Info("Successfully patched Cluster status for unmanaged control plane", "cluster", cluster.Name)
+	}
 
 	return reconcile.Result{}, nil
 }
