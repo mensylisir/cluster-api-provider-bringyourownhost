@@ -10,11 +10,6 @@ import (
 	"html/template"
 )
 
-const (
-	// ImgpkgVersion defines the imgpkg version that will be installed on host if imgpkg is not already installed
-	ImgpkgVersion = "v0.36.4"
-)
-
 // KubexmInstaller represents the installer for kubexm (TLS Bootstrap) mode
 // In this mode, we install Kubernetes binaries directly without using kubeadm
 type KubexmInstaller struct {
