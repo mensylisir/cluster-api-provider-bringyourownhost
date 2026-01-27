@@ -20,6 +20,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/cluster-api/controllers/external"
 	"sigs.k8s.io/cluster-api/controllers/remote"
@@ -983,12 +985,30 @@ func (r *ByoMachineReconciler) createBootstrapSecretTLSBootstrap(ctx context.Con
 		}
 	}
 
-	// Method 3: Try to get the CA from the cluster's trusted CA
-	// This is a fallback - try to get CA from the secret referenced by Machine's cluster
-	if caData == nil {
-		logger.V(4).Info("Attempting to get CA from cluster resources")
-		// The CA should be available from the bootstrap secret or from the cluster's kubeconfig
-		// If we still don't have CA, we'll try to get it from a well-known secret
+	// Method 3: For TLS Bootstrap mode with external clusters, generate bootstrap kubeconfig
+	// from the local cluster (where this controller is running)
+	if caData == nil || bootstrapKubeconfigData == nil {
+		logger.V(4).Info("Generating bootstrap kubeconfig from local cluster for TLS Bootstrap mode")
+
+		// Get the in-cluster config to create a bootstrap kubeconfig
+		restConfig, err := clientcmd.DefaultClientConfig.ClientConfig()
+		if err == nil {
+			// Create a bootstrap kubeconfig using the controller's credentials
+			bootstrapKubeconfigContent, err := generateBootstrapKubeconfig(restConfig)
+			if err == nil {
+				logger.Info("Generated bootstrap kubeconfig from local cluster")
+				bootstrapKubeconfigData = []byte(bootstrapKubeconfigContent)
+
+				// Extract CA from the generated kubeconfig
+				if caData == nil {
+					caData = extractCAFromKubeconfig(bootstrapKubeconfigData)
+				}
+			} else {
+				logger.V(4).Info("Failed to generate bootstrap kubeconfig", "error", err)
+			}
+		} else {
+			logger.V(4).Info("Could not get rest config, trying alternative methods")
+		}
 	}
 
 	// Validate that we have at least some data
@@ -1285,6 +1305,37 @@ nodePortAddresses: null
 oomScoreAdj: -999
 portRange: ""
 `
+}
+
+// generateBootstrapKubeconfig creates a kubeconfig for TLS bootstrap
+// using the provided rest config to connect to the cluster
+func generateBootstrapKubeconfig(restConfig *rest.Config) (string, error) {
+	// Create a simple kubeconfig YAML structure
+	var caData string
+	if len(restConfig.CAData) > 0 {
+		caData = base64.StdEncoding.EncodeToString(restConfig.CAData)
+	}
+
+	kubeconfigYAML := fmt.Sprintf(`apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    certificate-authority-data: %s
+    server: %s
+  name: bootstrap
+contexts:
+- context:
+    cluster: bootstrap
+    user: bootstrap
+  name: bootstrap
+current-context: bootstrap
+users:
+- name: bootstrap
+  user:
+    token: %s
+`, caData, restConfig.Host, restConfig.BearerToken)
+
+	return kubeconfigYAML, nil
 }
 
 // extractCAFromKubeconfig extracts CA data from a kubeconfig file
