@@ -181,7 +181,10 @@ func (r ByoClusterReconciler) reconcileNormal(ctx context.Context, byoCluster *i
 	// If so, we must manually patch the CAPI Cluster status to unblock downstream controllers
 	if cluster.Spec.ControlPlaneRef == nil {
 		// Only patch if status fields are missing to avoid unnecessary API calls
-		if !cluster.Status.ControlPlaneInitialized || !cluster.Status.ControlPlaneReady || !cluster.Status.InfrastructureReady {
+		// Use conditions to check for ControlPlaneInitialized since it's not a direct field in some CAPI versions
+		controlPlaneInitialized := conditions.IsTrue(cluster, clusterv1.ControlPlaneInitializedCondition)
+		
+		if !controlPlaneInitialized || !cluster.Status.ControlPlaneReady || !cluster.Status.InfrastructureReady {
 			logger := log.FromContext(ctx)
 
 			// Initialize the patch helper for the CAPI Cluster
@@ -192,8 +195,10 @@ func (r ByoClusterReconciler) reconcileNormal(ctx context.Context, byoCluster *i
 
 			// Set the required status fields to trick CAPI into thinking the control plane is ready
 			cluster.Status.InfrastructureReady = true
-			cluster.Status.ControlPlaneInitialized = true
 			cluster.Status.ControlPlaneReady = true
+			
+			// For ControlPlaneInitialized, we need to set the condition
+			conditions.MarkTrue(cluster, clusterv1.ControlPlaneInitializedCondition)
 
 			// Apply the patch
 			if err := patchHelper.Patch(ctx, cluster); err != nil {
