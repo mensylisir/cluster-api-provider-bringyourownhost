@@ -711,16 +711,30 @@ func (r *HostReconciler) bootstrapK8sNodeTLS(ctx context.Context, byoHost *infra
 
 	// Write kube-proxy configuration if provided and ManageKubeProxy is true
 	if byoHost.Spec.ManageKubeProxy {
-		if kubeProxyConfig, ok := secret.Data["kube-proxy.kubeconfig"]; ok {
-			kubeProxyConfigPath := "/etc/kubernetes/kube-proxy.kubeconfig"
+		// Write kube-proxy-config.yaml (required by kube-proxy service)
+		if kubeProxyConfigYAML, ok := secret.Data["kube-proxy-config.yaml"]; ok {
+			kubeProxyConfigPath := "/etc/kubernetes/kube-proxy-config.yaml"
 			if err := r.FileWriter.WriteToFile(&cloudinit.Files{
 				Path:        kubeProxyConfigPath,
+				Content:     string(kubeProxyConfigYAML),
+				Permissions: "0644",
+			}); err != nil {
+				return fmt.Errorf("failed to write kube-proxy config: %w", err)
+			}
+			logger.Info("Wrote kube-proxy config", "path", kubeProxyConfigPath)
+		}
+
+		// Write kube-proxy.kubeconfig (required for authentication)
+		if kubeProxyConfig, ok := secret.Data["kube-proxy.kubeconfig"]; ok {
+			kubeProxyKubeconfigPath := "/etc/kubernetes/kube-proxy.kubeconfig"
+			if err := r.FileWriter.WriteToFile(&cloudinit.Files{
+				Path:        kubeProxyKubeconfigPath,
 				Content:     string(kubeProxyConfig),
 				Permissions: "0600",
 			}); err != nil {
 				return fmt.Errorf("failed to write kube-proxy kubeconfig: %w", err)
 			}
-			logger.Info("Wrote kube-proxy kubeconfig", "path", kubeProxyConfigPath)
+			logger.Info("Wrote kube-proxy kubeconfig", "path", kubeProxyKubeconfigPath)
 		}
 	}
 
@@ -972,16 +986,16 @@ func (r *HostReconciler) preflightChecks(ctx context.Context) error {
 	// The installer script (ubuntu20_4k8s.go) DOES `swapoff -a`.
 	// So maybe swap check is redundant IF the installer succeeds.
 	// But checking ports is good.
-	
+
 	// Check Port 10250 (Kubelet)
 	// We can't easily check ports without netstat/ss.
 	// `ss -tuln | grep :10250`
-	
+
 	// Check if Kubelet is already running?
 	// `systemctl is-active kubelet`
 	// If it is active, and we are installing, maybe we should stop it?
 	// The installer script handles this?
-	
+
 	// Let's add a simple check for critical files to ensure we are not overwriting a working cluster
 	// unintentionally (though `hostCleanUp` should have run).
 	if _, err := os.Stat("/etc/kubernetes/manifests/kube-apiserver.yaml"); err == nil {

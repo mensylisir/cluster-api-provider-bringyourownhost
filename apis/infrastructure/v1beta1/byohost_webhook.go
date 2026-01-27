@@ -5,9 +5,7 @@ package v1beta1
 
 import (
 	"context"
-	"fmt"
 	"net/http"
-	"strings"
 
 	v1 "k8s.io/api/admission/v1"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -48,13 +46,15 @@ func (v *ByoHostValidator) handleCreateUpdate(req *admission.Request) admission.
 		return admission.Errored(http.StatusBadRequest, err)
 	}
 	userName := req.UserInfo.Username
+
+	// Allow ByoHost creation from any authenticated user
+	if req.Operation == v1.Create {
+		return admission.Allowed("")
+	}
+
 	// allow manager service account to patch ByoHost
 	if userName == managerServiceAccount && req.Operation == v1.Update {
 		return admission.Allowed("")
-	}
-	substrs := strings.Split(userName, ":")
-	if len(substrs) < 2 { //nolint: gomnd
-		return admission.Denied(fmt.Sprintf("%s is not a valid agent username", userName))
 	}
 	// Disabled hostname validation to allow any host name
 	// if !strings.Contains(byoHost.Name, substrs[2]) {
