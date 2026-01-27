@@ -348,10 +348,15 @@ func (r *ByoMachineReconciler) reconcileNormal(ctx context.Context, machineScope
 		return reconcile.Result{}, nil
 	}
 
-	if machineScope.Machine.Spec.Bootstrap.DataSecretName == nil {
-		logger.Info("Bootstrap Data Secret not available yet")
-		conditions.MarkFalse(machineScope.ByoMachine, infrav1.BYOHostReady, infrav1.WaitingForBootstrapDataSecretReason, clusterv1.ConditionSeverityInfo, "")
-		return reconcile.Result{}, nil
+	// For TLS Bootstrap mode, we create our own bootstrap secret directly
+	// So we don't need to wait for Machine.Spec.Bootstrap.DataSecretName
+	// For Kubeadm mode, we need to wait for the bootstrap data secret to be created
+	if machineScope.ByoMachine.Spec.JoinMode != infrav1.JoinModeTLSBootstrap {
+		if machineScope.Machine.Spec.Bootstrap.DataSecretName == nil {
+			logger.Info("Bootstrap Data Secret not available yet")
+			conditions.MarkFalse(machineScope.ByoMachine, infrav1.BYOHostReady, infrav1.WaitingForBootstrapDataSecretReason, clusterv1.ConditionSeverityInfo, "")
+			return reconcile.Result{}, nil
+		}
 	}
 
 	// If there is not yet an byoHost for this byoMachine,
@@ -1055,7 +1060,7 @@ func (r *ByoMachineReconciler) createBootstrapSecretTLSBootstrap(ctx context.Con
 					// Fallback: Generate a default kubelet-config if none exists
 					// This is common for non-kubeadm (binary) clusters
 					logger.Info("No kubelet-config ConfigMap found in target cluster, generating default")
-					
+
 					// Try to detect CoreDNS ClusterIP to set correct clusterDNS
 					var detectedClusterDNS string
 

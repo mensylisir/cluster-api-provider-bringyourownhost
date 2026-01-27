@@ -18,8 +18,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
-	"github.com/pkg/errors"
 	infrav1 "github.com/mensylisir/cluster-api-provider-bringyourownhost/apis/infrastructure/v1beta1"
+	"github.com/pkg/errors"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 
 	clusterutilv1 "sigs.k8s.io/cluster-api/util"
@@ -177,31 +177,40 @@ func (r ByoClusterReconciler) reconcileNormal(ctx context.Context, byoCluster *i
 
 	byoCluster.Status.Ready = true
 
-	// Check if this is an "unmanaged" cluster (no ControlPlaneRef), typical for BYOH/binary setups
-	// If so, we must manually patch the CAPI Cluster status to unblock downstream controllers
-	if cluster.Spec.ControlPlaneRef == nil {
-		// Only patch if status fields are missing to avoid unnecessary API calls
-		if !cluster.Status.ControlPlaneInitialized || !cluster.Status.ControlPlaneReady || !cluster.Status.InfrastructureReady {
-			logger := log.FromContext(ctx)
+	logger := log.FromContext(ctx)
 
-			// Initialize the patch helper for the CAPI Cluster
-			patchHelper, err := patch.NewHelper(cluster, r.Client)
-			if err != nil {
-				return reconcile.Result{}, errors.Wrap(err, "failed to init patch helper for Cluster")
-			}
-
-			// Set the required status fields to trick CAPI into thinking the control plane is ready
-			cluster.Status.InfrastructureReady = true
-			cluster.Status.ControlPlaneInitialized = true
-			cluster.Status.ControlPlaneReady = true
-
-			// Apply the patch
-			if err := patchHelper.Patch(ctx, cluster); err != nil {
-				logger.Error(err, "failed to patch Cluster status for unmanaged control plane")
-				return reconcile.Result{}, err
-			}
-			logger.Info("Successfully patched Cluster status for unmanaged control plane", "cluster", cluster.Name)
+	// For BYOH/binary/external clusters, we must manually patch the CAPI Cluster status
+	// to unblock downstream controllers (Machine, MachineDeployment)
+	// This is necessary because BYOH doesn't use CAPI's standard control plane management
+	needsPatch := !cluster.Status.InfrastructureReady || !cluster.Status.ControlPlaneReady
+	if needsPatch {
+		// Initialize the patch helper for the CAPI Cluster
+		patchHelper, err := patch.NewHelper(cluster, r.Client)
+		if err != nil {
+			return reconcile.Result{}, errors.Wrap(err, "failed to init patch helper for Cluster")
 		}
+
+		// Set the required status fields to unblock Machine provisioning
+		cluster.Status.InfrastructureReady = true
+		cluster.Status.ControlPlaneReady = true
+
+		// Apply the patch
+		if err := patchHelper.Patch(ctx, cluster); err != nil {
+			logger.Error(err, "failed to patch Cluster status for unmanaged control plane",
+				"cluster", cluster.Name,
+				"infrastructureReady", cluster.Status.InfrastructureReady,
+				"controlPlaneReady", cluster.Status.ControlPlaneReady)
+			return reconcile.Result{}, err
+		}
+		logger.Info("Successfully patched Cluster status for BYOH cluster",
+			"cluster", cluster.Name,
+			"infrastructureReady", cluster.Status.InfrastructureReady,
+			"controlPlaneReady", cluster.Status.ControlPlaneReady)
+	} else {
+		logger.V(4).Info("Cluster status already ready, no patch needed",
+			"cluster", cluster.Name,
+			"infrastructureReady", cluster.Status.InfrastructureReady,
+			"controlPlaneReady", cluster.Status.ControlPlaneReady)
 	}
 
 	return reconcile.Result{}, nil
