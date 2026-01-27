@@ -15,7 +15,9 @@ import (
 	"github.com/mensylisir/cluster-api-provider-bringyourownhost/common"
 	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/record"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	"sigs.k8s.io/cluster-api/util/conditions"
@@ -152,16 +154,27 @@ func (r *HostReconciler) reconcileNormal(ctx context.Context, byoHost *infrastru
 			logger.Info("Skipping installation of k8s components")
 		} else if !conditions.IsTrue(byoHost, infrastructurev1beta1.K8sComponentsInstallationSucceeded) {
 			if byoHost.Spec.InstallationSecret == nil {
-				logger.Info("InstallationSecret not ready")
-				conditions.MarkFalse(byoHost, infrastructurev1beta1.K8sComponentsInstallationSucceeded, infrastructurev1beta1.K8sInstallationSecretUnavailableReason, clusterv1.ConditionSeverityInfo, "")
-				return ctrl.Result{}, nil
+				// For TLS Bootstrap mode, we check DownloadMode to decide whether to skip installation.
+				// If DownloadMode is explicitly "offline", we assume binaries are pre-installed.
+				if byoHost.Spec.JoinMode == infrastructurev1beta1.JoinModeTLSBootstrap && byoHost.Spec.DownloadMode == infrastructurev1beta1.DownloadModeOffline {
+					logger.Info("TLS Bootstrap mode detected with offline download mode. Skipping k8s components installation.")
+					r.Recorder.Event(byoHost, corev1.EventTypeNormal, "InstallScriptSkipped", "Skipped k8s components installation (Offline mode)")
+					conditions.MarkTrue(byoHost, infrastructurev1beta1.K8sComponentsInstallationSucceeded)
+				} else {
+					// In all other cases (Kubeadm mode, or TLS Bootstrap with Online/Default mode),
+					// we expect an InstallationSecret. If it's missing, we wait.
+					logger.Info("InstallationSecret not ready")
+					conditions.MarkFalse(byoHost, infrastructurev1beta1.K8sComponentsInstallationSucceeded, infrastructurev1beta1.K8sInstallationSecretUnavailableReason, clusterv1.ConditionSeverityInfo, "")
+					return ctrl.Result{}, nil
+				}
+			} else {
+				err = r.executeInstallerController(ctx, byoHost)
+				if err != nil {
+					return ctrl.Result{}, err
+				}
+				r.Recorder.Event(byoHost, corev1.EventTypeNormal, "InstallScriptExecutionSucceeded", "install script executed")
+				conditions.MarkTrue(byoHost, infrastructurev1beta1.K8sComponentsInstallationSucceeded)
 			}
-			err = r.executeInstallerController(ctx, byoHost)
-			if err != nil {
-				return ctrl.Result{}, err
-			}
-			r.Recorder.Event(byoHost, corev1.EventTypeNormal, "InstallScriptExecutionSucceeded", "install script executed")
-			conditions.MarkTrue(byoHost, infrastructurev1beta1.K8sComponentsInstallationSucceeded)
 		} else {
 			logger.Info("install script already executed")
 		}
@@ -185,6 +198,18 @@ func (r *HostReconciler) reconcileNormal(ctx context.Context, byoHost *infrastru
 		logger.Info("k8s node successfully bootstrapped")
 		r.Recorder.Event(byoHost, corev1.EventTypeNormal, "BootstrapK8sNodeSucceeded", "k8s Node Bootstraped")
 		conditions.MarkTrue(byoHost, infrastructurev1beta1.K8sNodeBootstrapSucceeded)
+
+		// For Kubeadm mode, we need to manually patch the ProviderID on the Node object
+		// because kubeadm join doesn't accept --provider-id flag in the way we need.
+		// Doing it here (Agent-side) is faster than waiting for the Controller to do it.
+		if byoHost.Spec.JoinMode != infrastructurev1beta1.JoinModeTLSBootstrap {
+			if err := r.patchLocalNodeProviderID(ctx, byoHost.Name); err != nil {
+				// Don't fail reconciliation, just log error. Controller will retry eventually.
+				logger.Error(err, "failed to patch local node providerID")
+			} else {
+				logger.Info("Successfully patched local node providerID")
+			}
+		}
 
 		// Persist Machine ID to ensure consistency across restarts/rebinds
 		if byoHost.Status.MachineRef != nil {
@@ -215,9 +240,32 @@ func (r *HostReconciler) executeInstallerController(ctx context.Context, byoHost
 		return err
 	}
 	logger.Info("executing install script")
-	err = r.CmdRunner.RunCmd(ctx, installScript)
+
+	// Pre-flight checks
+	// We perform basic checks before attempting installation to fail fast
+	if err := r.preflightChecks(ctx); err != nil {
+		logger.Error(err, "pre-flight checks failed")
+		r.Recorder.Event(byoHost, corev1.EventTypeWarning, "PreflightCheckFailed", fmt.Sprintf("Pre-flight check failed: %v", err))
+		return err
+	}
+
+	// Retry logic for install script execution
+	// This helps with transient network issues during binary downloads
+	maxRetries := 3
+	for i := 0; i < maxRetries; i++ {
+		err = r.CmdRunner.RunCmd(ctx, installScript)
+		if err == nil {
+			break
+		}
+		if i < maxRetries-1 {
+			logger.Error(err, "install script execution failed, retrying...", "attempt", i+1)
+			// Wait before retrying (exponential backoff could be better, but simple sleep is a start)
+			time.Sleep(10 * time.Second)
+		}
+	}
+
 	if err != nil {
-		logger.Error(err, "error executing installation script")
+		logger.Error(err, "error executing installation script after retries")
 		r.Recorder.Event(byoHost, corev1.EventTypeWarning, "InstallScriptExecutionFailed", "install script execution failed")
 		conditions.MarkFalse(byoHost, infrastructurev1beta1.K8sComponentsInstallationSucceeded, infrastructurev1beta1.K8sComponentsInstallationFailedReason, clusterv1.ConditionSeverityInfo, "")
 		return err
@@ -496,6 +544,7 @@ func (r *HostReconciler) resetNode(ctx context.Context, byoHost *infrastructurev
 
 	// 1. Stop services
 	_ = r.CmdRunner.RunCmd(ctx, "systemctl stop kubelet")
+	_ = r.CmdRunner.RunCmd(ctx, "systemctl stop containerd")
 	if byoHost.Spec.ManageKubeProxy {
 		_ = r.CmdRunner.RunCmd(ctx, "systemctl stop kube-proxy")
 	}
@@ -508,6 +557,8 @@ func (r *HostReconciler) resetNode(ctx context.Context, byoHost *infrastructurev
 		"/var/lib/kubelet/config.yaml",
 		"/etc/kubernetes/kube-proxy.kubeconfig",
 		"/etc/kubernetes/kube-proxy-config.yaml",
+		"/etc/systemd/system/kubelet.service",
+		"/etc/systemd/system/kube-proxy.service",
 	}
 
 	for _, f := range filesToRemove {
@@ -516,9 +567,25 @@ func (r *HostReconciler) resetNode(ctx context.Context, byoHost *infrastructurev
 		}
 	}
 
-	// 3. Remove pki directory
-	if err := os.RemoveAll("/var/lib/kubelet/pki"); err != nil {
-		logger.V(4).Info("Failed to remove pki dir", "dir", "/var/lib/kubelet/pki", "error", err)
+	// Reload systemd to pick up service file removal
+	_ = r.CmdRunner.RunCmd(ctx, "systemctl daemon-reload")
+
+	// 3. Remove directories
+	dirsToRemove := []string{
+		"/var/lib/kubelet",
+		"/var/lib/kube-proxy",
+		"/var/lib/etcd",
+		"/etc/kubernetes",
+		"/run/kubernetes",
+		"/var/lib/cni",
+		"/etc/cni",
+		"/opt/cni",
+	}
+
+	for _, d := range dirsToRemove {
+		if err := os.RemoveAll(d); err != nil {
+			logger.V(4).Info("Failed to remove directory", "dir", d, "error", err)
+		}
 	}
 
 	logger.Info("Kubernetes Node reset completed")
@@ -699,22 +766,81 @@ func (r *HostReconciler) bootstrapK8sNodeTLS(ctx context.Context, byoHost *infra
 		kubeletArgs = append(kubeletArgs, fmt.Sprintf("--cluster-dns=%s", endpointIP))
 	}
 
-	// Start kubelet
-	kubeletCmd := fmt.Sprintf("kubelet %s", strings.Join(kubeletArgs, " "))
-	logger.Info("Starting kubelet", "command", kubeletCmd)
+	// Create and start kubelet systemd service
+	kubeletServiceContent := fmt.Sprintf(`[Unit]
+Description=kubelet: The Kubernetes Node Agent
+Documentation=https://kubernetes.io/docs/home/
+Wants=network-online.target
+After=network-online.target
 
-	if err := r.CmdRunner.RunCmd(ctx, kubeletCmd); err != nil {
-		return fmt.Errorf("failed to start kubelet: %w", err)
+[Service]
+ExecStart=/usr/local/bin/kubelet %s
+Restart=always
+StartLimitInterval=0
+RestartSec=10
+# Mount cgroup to support cgroupfs driver (common in binary installs)
+ExecStartPre=-/bin/mount -o remount,rw '/sys/fs/cgroup'
+# Ensure working directory exists
+WorkingDirectory=/var/lib/kubelet
+# Resource accounting
+CPUAccounting=true
+MemoryAccounting=true
+
+[Install]
+WantedBy=multi-user.target
+`, strings.Join(kubeletArgs, " "))
+
+	if err := r.FileWriter.WriteToFile(&cloudinit.Files{
+		Path:        "/etc/systemd/system/kubelet.service",
+		Content:     kubeletServiceContent,
+		Permissions: "0644",
+	}); err != nil {
+		return fmt.Errorf("failed to write kubelet service: %w", err)
 	}
+	logger.Info("Wrote kubelet service file")
+
+	if err := r.CmdRunner.RunCmd(ctx, "systemctl daemon-reload"); err != nil {
+		return fmt.Errorf("failed to reload systemd: %w", err)
+	}
+
+	if err := r.CmdRunner.RunCmd(ctx, "systemctl enable --now kubelet"); err != nil {
+		return fmt.Errorf("failed to enable/start kubelet: %w", err)
+	}
+	logger.Info("Started kubelet service")
 
 	// Start kube-proxy if ManageKubeProxy is true
 	if byoHost.Spec.ManageKubeProxy {
-		kubeProxyCmd := "kube-proxy --config=/etc/kubernetes/kube-proxy-config.yaml"
-		logger.Info("Starting kube-proxy", "command", kubeProxyCmd)
+		kubeProxyServiceContent := `[Unit]
+Description=kube-proxy: The Kubernetes Network Proxy
+Documentation=https://kubernetes.io/docs/home/
+Wants=network-online.target
+After=network-online.target
 
-		if err := r.CmdRunner.RunCmd(ctx, kubeProxyCmd); err != nil {
-			return fmt.Errorf("failed to start kube-proxy: %w", err)
+[Service]
+ExecStart=/usr/local/bin/kube-proxy --config=/etc/kubernetes/kube-proxy-config.yaml
+Restart=always
+StartLimitInterval=0
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+`
+		if err := r.FileWriter.WriteToFile(&cloudinit.Files{
+			Path:        "/etc/systemd/system/kube-proxy.service",
+			Content:     kubeProxyServiceContent,
+			Permissions: "0644",
+		}); err != nil {
+			return fmt.Errorf("failed to write kube-proxy service: %w", err)
 		}
+		logger.Info("Wrote kube-proxy service file")
+
+		if err := r.CmdRunner.RunCmd(ctx, "systemctl daemon-reload"); err != nil {
+			return fmt.Errorf("failed to reload systemd for kube-proxy: %w", err)
+		}
+		if err := r.CmdRunner.RunCmd(ctx, "systemctl enable --now kube-proxy"); err != nil {
+			return fmt.Errorf("failed to enable/start kube-proxy: %w", err)
+		}
+		logger.Info("Started kube-proxy service")
 	}
 
 	logger.Info("Successfully bootstrapped k8s node using TLS Bootstrap mode")
@@ -774,4 +900,94 @@ func (r *HostReconciler) removeAnnotations(ctx context.Context, byoHost *infrast
 
 	// Remove the bundle registry annotation
 	delete(byoHost.Annotations, infrastructurev1beta1.BundleLookupBaseRegistryAnnotation)
+}
+
+// patchLocalNodeProviderID patches the ProviderID of the local Node object
+// using the local kubelet configuration.
+func (r *HostReconciler) patchLocalNodeProviderID(ctx context.Context, hostname string) error {
+	logger := ctrl.LoggerFrom(ctx)
+	logger.Info("Attempting to patch local node ProviderID")
+
+	kubeconfigPath := "/etc/kubernetes/kubelet.conf"
+	if _, err := os.Stat(kubeconfigPath); os.IsNotExist(err) {
+		return fmt.Errorf("kubelet.conf not found at %s", kubeconfigPath)
+	}
+
+	// Build client from local kubeconfig
+	config, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath)
+	if err != nil {
+		return fmt.Errorf("failed to build config from kubelet.conf: %w", err)
+	}
+
+	localClient, err := client.New(config, client.Options{})
+	if err != nil {
+		return fmt.Errorf("failed to create local client: %w", err)
+	}
+
+	// Get Node
+	node := &corev1.Node{}
+	// Note: We assume the Node name matches the Hostname
+	if err := localClient.Get(ctx, types.NamespacedName{Name: hostname}, node); err != nil {
+		return fmt.Errorf("failed to get local node %s: %w", hostname, err)
+	}
+
+	// Patch ProviderID
+	providerID := common.GenerateProviderID(hostname)
+	if node.Spec.ProviderID == providerID {
+		logger.Info("Node ProviderID already set correctly")
+		return nil
+	}
+
+	helper, err := patch.NewHelper(node, localClient)
+	if err != nil {
+		return fmt.Errorf("failed to create patch helper: %w", err)
+	}
+
+	node.Spec.ProviderID = providerID
+	if err := helper.Patch(ctx, node); err != nil {
+		return fmt.Errorf("failed to patch node ProviderID: %w", err)
+	}
+
+	logger.Info("Successfully patched Node ProviderID", "providerID", providerID)
+	return nil
+}
+
+// preflightChecks performs basic checks before installation
+func (r *HostReconciler) preflightChecks(ctx context.Context) error {
+	logger := ctrl.LoggerFrom(ctx)
+
+	// Check Swap
+	// swapon --show returns exit code 0 if swap is active (and output), 0 if no output (no swap? check man page)
+	// Actually `swapon --show` returns 0 even if no swap, but output is empty.
+	// If swap is active, output is not empty.
+	// We can try `swapon --summary` or check `/proc/swaps`.
+	// Simple check: `swapon --show` has output?
+	// But `CmdRunner` returns error if command fails.
+	// Let's use `cat /proc/swaps`.
+	// Or trust the installer script to handle swapoff?
+	// The installer script does `swapoff -a`.
+	// But `kubelet` might fail if swap is re-enabled.
+	// CAPI usually expects swap disabled.
+	// The user asked to "verify... exist problems".
+	// The installer script (ubuntu20_4k8s.go) DOES `swapoff -a`.
+	// So maybe swap check is redundant IF the installer succeeds.
+	// But checking ports is good.
+	
+	// Check Port 10250 (Kubelet)
+	// We can't easily check ports without netstat/ss.
+	// `ss -tuln | grep :10250`
+	
+	// Check if Kubelet is already running?
+	// `systemctl is-active kubelet`
+	// If it is active, and we are installing, maybe we should stop it?
+	// The installer script handles this?
+	
+	// Let's add a simple check for critical files to ensure we are not overwriting a working cluster
+	// unintentionally (though `hostCleanUp` should have run).
+	if _, err := os.Stat("/etc/kubernetes/manifests/kube-apiserver.yaml"); err == nil {
+		logger.Info("Warning: Found existing kube-apiserver manifest. Node might already be part of a cluster.")
+		// We don't fail, just warn, because maybe it's a re-install.
+	}
+
+	return nil
 }

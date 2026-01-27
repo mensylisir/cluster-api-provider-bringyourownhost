@@ -17,8 +17,8 @@ var (
 	DownloadPathPermissions fs.FileMode = 0777
 )
 
-// bundleDownloader for downloading an OCI image.
-type bundleDownloader struct {
+// BundleDownloader for downloading an OCI image.
+type BundleDownloader struct {
 	bundleType   BundleType
 	repoAddr     string
 	downloadPath string
@@ -26,8 +26,8 @@ type bundleDownloader struct {
 }
 
 // NewBundleDownloader will return a new bundle downloader instance
-func NewBundleDownloader(bundleType, repoAddr, downloadPath string, logger logr.Logger) *bundleDownloader {
-	return &bundleDownloader{
+func NewBundleDownloader(bundleType, repoAddr, downloadPath string, logger logr.Logger) *BundleDownloader {
+	return &BundleDownloader{
 		bundleType:   BundleType(bundleType),
 		repoAddr:     repoAddr,
 		downloadPath: downloadPath,
@@ -56,7 +56,7 @@ func NewBundleDownloader(bundleType, repoAddr, downloadPath string, logger logr.
 // }
 
 // GetBundleDirPath returns the path to directory containing the required bundle.
-func (bd *bundleDownloader) GetBundleDirPath(k8sVersion string) string {
+func (bd *BundleDownloader) GetBundleDirPath(k8sVersion string) string {
 	// Not storing tag as a subdir of k8s because we can't atomically move
 	// the temp bundle dir to a non-existing dir.
 	// Using "-" instead of ":" because Windows doesn't like the latter
@@ -69,12 +69,12 @@ func GetBundleName(normalizedOsVersion string) string {
 }
 
 // getBundlePathWithRepo returns the path
-func (bd *bundleDownloader) getBundlePathWithRepo() string {
+func (bd *BundleDownloader) getBundlePathWithRepo() string {
 	return filepath.Join(bd.downloadPath, strings.ReplaceAll(bd.repoAddr, "/", "."))
 }
 
 // GetBundleAddr returns the exact address to the bundle in the repo.
-func (bd *bundleDownloader) GetBundleAddr(normalizedOsVersion, k8sVersion string) string {
+func (bd *BundleDownloader) GetBundleAddr(normalizedOsVersion, k8sVersion string) string {
 	if bd.repoAddr == "online" {
 		return "online"
 	}

@@ -10,6 +10,10 @@ import (
 	"html/template"
 )
 
+	// ImgpkgVersion defines the imgpkg version that will be installed on host if imgpkg is not already installed
+	ImgpkgVersion = "v0.36.4"
+)
+
 // KubexmInstaller represents the installer for kubexm (TLS Bootstrap) mode
 // In this mode, we install Kubernetes binaries directly without using kubeadm
 type KubexmInstaller struct {
@@ -19,7 +23,7 @@ type KubexmInstaller struct {
 }
 
 // NewKubexmInstaller creates a new KubexmInstaller for kubexm (TLS Bootstrap) mode
-func NewKubexmInstaller(ctx context.Context, arch, k8sVersion string, downloadMode string, proxyConfig map[string]string) (*KubexmInstaller, error) {
+func NewKubexmInstaller(ctx context.Context, arch, bundleAddrs, k8sVersion string, downloadMode string, proxyConfig map[string]string) (*KubexmInstaller, error) {
 	parseFn := func(script string) (string, error) {
 		parser, err := template.New("parser").Parse(script)
 		if err != nil {
@@ -27,12 +31,15 @@ func NewKubexmInstaller(ctx context.Context, arch, k8sVersion string, downloadMo
 		}
 		var tpl bytes.Buffer
 		if err = parser.Execute(&tpl, map[string]string{
-			"Arch":         arch,
-			"K8sVersion":   k8sVersion,
-			"DownloadMode": downloadMode,
-			"HttpProxy":    proxyConfig["http-proxy"],
-			"HttpsProxy":   proxyConfig["https-proxy"],
-			"NoProxy":      proxyConfig["no-proxy"],
+			"Arch":               arch,
+			"K8sVersion":         k8sVersion,
+			"DownloadMode":       downloadMode,
+			"BundleAddrs":        bundleAddrs,
+			"BundleDownloadPath": "{{.BundleDownloadPath}}",
+			"ImgpkgVersion":      ImgpkgVersion,
+			"HttpProxy":          proxyConfig["http-proxy"],
+			"HttpsProxy":         proxyConfig["https-proxy"],
+			"NoProxy":            proxyConfig["no-proxy"],
 		}); err != nil {
 			return "", fmt.Errorf("unable to apply parsed template to kubexm installer")
 		}
@@ -87,6 +94,11 @@ ARCH={{.Arch}}
 K8S_VERSION={{.K8sVersion}}
 DOWNLOAD_MODE={{.DownloadMode}}
 
+BUNDLE_DOWNLOAD_PATH={{.BundleDownloadPath}}
+BUNDLE_ADDR={{.BundleAddrs}}
+IMGPKG_VERSION={{.ImgpkgVersion}}
+BUNDLE_PATH=$BUNDLE_DOWNLOAD_PATH/$BUNDLE_ADDR
+
 # Production: Ensure NTP time sync is active
 echo "Ensuring time synchronization..."
 systemctl restart systemd-timesyncd || true
@@ -121,6 +133,24 @@ rm -rf /var/lib/etcd
 rm -rf /run/kubernetes
 
 echo "Kubexm mode: Installing Kubernetes binaries for TLS Bootstrap..."
+
+if ! command -v imgpkg >>/dev/null; then
+	echo "installing imgpkg"	
+	
+	if command -v wget >>/dev/null; then
+		dl_bin="wget -nv -O-"
+	elif command -v curl >>/dev/null; then
+		dl_bin="curl -s -L"
+	else
+		echo "installing curl"
+		apt-get install -y curl
+		dl_bin="curl -s -L"
+	fi
+	
+	$dl_bin github.com/vmware-tanzu/carvel-imgpkg/releases/download/$IMGPKG_VERSION/imgpkg-linux-$ARCH > /tmp/imgpkg
+	mv /tmp/imgpkg /usr/local/bin/imgpkg
+	chmod +x /usr/local/bin/imgpkg
+fi
 
 if [ "$DOWNLOAD_MODE" == "online" ]; then
     echo "Running in ONLINE mode, downloading binaries from official releases..."
@@ -173,20 +203,43 @@ if [ "$DOWNLOAD_MODE" == "online" ]; then
     chmod +x /usr/local/bin/runc
     
 else
-    echo "Running in OFFLINE mode, using existing local binaries..."
+    echo "Running in OFFLINE mode, using binary bundle..."
     
-    # Check if binaries exist
-    if [ ! -f "/usr/local/bin/kubelet" ]; then
-        echo "ERROR: Kubelet binary not found in /usr/local/bin/ for offline mode"
-        exit 1
+    echo "Checking for local bundle..."
+    mkdir -p $BUNDLE_PATH
+
+    # Check if critical binary files exist
+    if [ -f "$BUNDLE_PATH/bin/kubelet" ] && [ -f "$BUNDLE_PATH/containerd/bin/containerd" ]; then
+        echo "Local binary bundle found. Skipping download."
+    else
+        echo "Local bundle not found or incomplete. Downloading..."
+        imgpkg pull -i $BUNDLE_ADDR -o $BUNDLE_PATH
     fi
     
-    if [ ! -f "/usr/local/bin/kube-proxy" ]; then
-        echo "ERROR: Kube-proxy binary not found in /usr/local/bin/ for offline mode"
-        exit 1
+    # Extract and install Kubernetes binaries
+    if [ -d "$BUNDLE_PATH/bin" ]; then
+        echo "Installing Kubernetes binaries from bundle..."
+        cp -f $BUNDLE_PATH/bin/* /usr/local/bin/
+        chmod +x /usr/local/bin/*
+        
+        # Verify kube-proxy exists (critical for binary mode)
+        if [ ! -f "/usr/local/bin/kube-proxy" ]; then
+             echo "WARNING: kube-proxy not found in bundle! Binary mode installation might fail if ManageKubeProxy is true."
+        fi
     fi
     
-    echo "Using existing Kubernetes binaries..."
+    # Install CNI plugins
+    if [ -d "$BUNDLE_PATH/cni/bin" ]; then
+        echo "Installing CNI plugins from bundle..."
+        mkdir -p /opt/cni/bin
+        cp -f $BUNDLE_PATH/cni/bin/* /opt/cni/bin/
+    fi
+    
+    # Install containerd
+    if [ -d "$BUNDLE_PATH/containerd" ]; then
+        echo "Installing containerd from bundle..."
+        cp -rf $BUNDLE_PATH/containerd/* /usr/local/
+    fi
 fi
 
 ## Pre-flight Check: Swap
@@ -262,6 +315,28 @@ systemctl daemon-reload && systemctl enable containerd && systemctl start contai
 	UndoKubexm = `
 set -euox pipefail
 
+# Proxy configuration
+HTTP_PROXY_VAL="{{.HttpProxy}}"
+HTTPS_PROXY_VAL="{{.HttpsProxy}}"
+NO_PROXY_VAL="{{.NoProxy}}"
+if [ -n "$HTTP_PROXY_VAL" ]; then
+    export HTTP_PROXY="$HTTP_PROXY_VAL"
+    export http_proxy="$HTTP_PROXY_VAL"
+fi
+if [ -n "$HTTPS_PROXY_VAL" ]; then
+    export HTTPS_PROXY="$HTTPS_PROXY_VAL"
+    export https_proxy="$HTTPS_PROXY_VAL"
+fi
+if [ -n "$NO_PROXY_VAL" ]; then
+    export NO_PROXY="$NO_PROXY_VAL"
+    export no_proxy="$NO_PROXY_VAL"
+fi
+
+
+BUNDLE_DOWNLOAD_PATH={{.BundleDownloadPath}}
+BUNDLE_ADDR={{.BundleAddrs}}
+BUNDLE_PATH=$BUNDLE_DOWNLOAD_PATH/$BUNDLE_ADDR
+
 ## Reset Kubernetes state (Best Effort)
 echo "Resetting Kubernetes state..."
 if command -v kubelet >/dev/null; then
@@ -317,15 +392,37 @@ fi
 ## enable swap
 swapon -a && sed -ri '/\sswap\s/s/^#?//' /etc/fstab
 
+rm -rf $BUNDLE_PATH
 echo "Kubexm cleanup complete."
 `
 
 	UpgradeKubexm = `
 set -euox pipefail
 
+# Proxy configuration
+HTTP_PROXY_VAL="{{.HttpProxy}}"
+HTTPS_PROXY_VAL="{{.HttpsProxy}}"
+NO_PROXY_VAL="{{.NoProxy}}"
+if [ -n "$HTTP_PROXY_VAL" ]; then
+    export HTTP_PROXY="$HTTP_PROXY_VAL"
+    export http_proxy="$HTTP_PROXY_VAL"
+fi
+if [ -n "$HTTPS_PROXY_VAL" ]; then
+    export HTTPS_PROXY="$HTTPS_PROXY_VAL"
+    export https_proxy="$HTTPS_PROXY_VAL"
+fi
+if [ -n "$NO_PROXY_VAL" ]; then
+    export NO_PROXY="$NO_PROXY_VAL"
+    export no_proxy="$NO_PROXY_VAL"
+fi
+
+
+BUNDLE_DOWNLOAD_PATH={{.BundleDownloadPath}}
+BUNDLE_ADDR={{.BundleAddrs}}
 ARCH={{.Arch}}
 K8S_VERSION={{.K8sVersion}}
 DOWNLOAD_MODE={{.DownloadMode}}
+BUNDLE_PATH=$BUNDLE_DOWNLOAD_PATH/$BUNDLE_ADDR
 
 echo "Kubexm upgrade mode..."
 
@@ -347,7 +444,21 @@ if [ "$DOWNLOAD_MODE" == "online" ]; then
     chmod +x /usr/local/bin/kubectl
     
 else
-    echo "Running in OFFLINE mode, upgrading from local binaries..."
+    echo "Running in OFFLINE mode, upgrading via binary bundle..."
+    
+    echo "Checking for local bundle..."
+    mkdir -p $BUNDLE_PATH
+
+    if [ -f "$BUNDLE_PATH/bin/kubelet" ]; then
+        echo "Upgrading Kubernetes binaries from bundle..."
+        cp -f $BUNDLE_PATH/bin/* /usr/local/bin/
+        chmod +x /usr/local/bin/*
+    else
+        echo "Bundle not found. Downloading..."
+        imgpkg pull -i $BUNDLE_ADDR -o $BUNDLE_PATH
+        cp -f $BUNDLE_PATH/bin/* /usr/local/bin/
+        chmod +x /usr/local/bin/*
+    fi
     
     # Check if binaries exist
     if [ -f "/usr/local/bin/kubelet" ]; then

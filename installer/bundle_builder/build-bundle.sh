@@ -74,6 +74,11 @@ echo "  Downloading kubelet..."
 curl -L --fail --output "${BIN_DIR}/kubelet" \
     "https://dl.k8s.io/${K8S_VERSION}/bin/linux/${ARCH}/kubelet"
 
+# Download kube-proxy (required for binary/kubexm mode)
+echo "  Downloading kube-proxy..."
+curl -L --fail --output "${BIN_DIR}/kube-proxy" \
+    "https://dl.k8s.io/${K8S_VERSION}/bin/linux/${ARCH}/kube-proxy"
+
 # Download cri-tools (crictl)
 echo "  Downloading cri-tools..."
 curl -L --fail --output "${DOWNLOAD_DIR}/crictl.tar.gz" \

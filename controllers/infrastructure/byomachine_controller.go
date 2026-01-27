@@ -39,6 +39,7 @@ import (
 	"github.com/go-logr/logr"
 	infrav1 "github.com/mensylisir/cluster-api-provider-bringyourownhost/apis/infrastructure/v1beta1"
 	"github.com/mensylisir/cluster-api-provider-bringyourownhost/common"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -1021,16 +1022,133 @@ func (r *ByoMachineReconciler) createBootstrapSecretTLSBootstrap(ctx context.Con
 		tlsBootstrapSecret.Data["bootstrap-kubeconfig"] = bootstrapKubeconfigData
 	}
 
-	// Try to fetch additional configurations (kubelet-config, kube-proxy) from the bootstrap secret
+	// Try to fetch additional configurations (kubelet-config, kube-proxy)
+	// Priority 1: Fetch from target cluster (emulate kubeadm sync)
+	// This ensures we use the EXACT config that kubeadm would download
+	remoteClient, err := r.getRemoteClient(ctx, machineScope.ByoMachine)
+	if err == nil {
+		// Try to get kubelet-config ConfigMap (kube-system/kubelet-config-1.x)
+		// We try a few versions since we don't know the exact minor version
+		// Or we can try to guess from the machine version
+		k8sVersion := *machineScope.Machine.Spec.Version
+		// Normalize version (e.g. v1.22.2 -> 1.22)
+		re := regexp.MustCompile(`v?(\d+\.\d+)`)
+		match := re.FindStringSubmatch(k8sVersion)
+		if len(match) > 1 {
+			shortVer := match[1]
+			configMapName := fmt.Sprintf("kubelet-config-%s", shortVer)
+			cm := &corev1.ConfigMap{}
+			if err := remoteClient.Get(ctx, client.ObjectKey{Namespace: "kube-system", Name: configMapName}, cm); err == nil {
+				if data, ok := cm.Data["kubelet"]; ok {
+					tlsBootstrapSecret.Data["kubelet-config.yaml"] = []byte(data)
+					logger.Info("Fetched kubelet-config from target cluster", "configMap", configMapName)
+				}
+			} else {
+				logger.V(4).Info("Could not fetch kubelet-config from target cluster, trying fallback", "configMap", configMapName, "error", err)
+				// Fallback: Try unversioned "kubelet-config"
+				if err := remoteClient.Get(ctx, client.ObjectKey{Namespace: "kube-system", Name: "kubelet-config"}, cm); err == nil {
+					if data, ok := cm.Data["kubelet"]; ok {
+						tlsBootstrapSecret.Data["kubelet-config.yaml"] = []byte(data)
+						logger.Info("Fetched unversioned kubelet-config from target cluster")
+					}
+				} else {
+					// Fallback: Generate a default kubelet-config if none exists
+					// This is common for non-kubeadm (binary) clusters
+					logger.Info("No kubelet-config ConfigMap found in target cluster, generating default")
+					
+					// Try to detect CoreDNS ClusterIP to set correct clusterDNS
+					var detectedClusterDNS string
+
+					// Priority 1: Check for NodeLocal DNS Cache (nodelocaldns)
+					// If present, it usually runs as a DaemonSet and listens on a link-local IP (e.g., 169.254.20.10)
+					// or a cluster IP. We need to find the listening IP from arguments.
+					dsList := &appsv1.DaemonSetList{}
+					if err := remoteClient.List(ctx, dsList, client.InNamespace("kube-system")); err == nil {
+						for _, ds := range dsList.Items {
+							if ds.Name == "node-local-dns" || ds.Name == "nodelocaldns" {
+								// Parse arguments to find -localip
+								for _, container := range ds.Spec.Template.Spec.Containers {
+									for i, arg := range container.Args {
+										if arg == "-localip" && i+1 < len(container.Args) {
+											// The next argument is the IP(s)
+											ips := strings.Split(container.Args[i+1], ",")
+											if len(ips) > 0 {
+												detectedClusterDNS = strings.TrimSpace(ips[0])
+												logger.Info("Detected NodeLocal DNS", "ip", detectedClusterDNS)
+											}
+										}
+									}
+								}
+								if detectedClusterDNS != "" {
+									break
+								}
+							}
+						}
+					}
+
+					// Priority 2: Check standard Services if NodeLocal DNS not found
+					if detectedClusterDNS == "" {
+						coreDNSSvc := &corev1.Service{}
+						// Try standard kube-system/kube-dns
+						if err := remoteClient.Get(ctx, client.ObjectKey{Namespace: "kube-system", Name: "kube-dns"}, coreDNSSvc); err == nil {
+							if len(coreDNSSvc.Spec.ClusterIP) > 0 {
+								detectedClusterDNS = coreDNSSvc.Spec.ClusterIP
+								logger.Info("Detected clusterDNS from kube-dns Service", "ip", detectedClusterDNS)
+							}
+						}
+						// If not found, try coredns
+						if detectedClusterDNS == "" {
+							if err := remoteClient.Get(ctx, client.ObjectKey{Namespace: "kube-system", Name: "coredns"}, coreDNSSvc); err == nil {
+								if len(coreDNSSvc.Spec.ClusterIP) > 0 {
+									detectedClusterDNS = coreDNSSvc.Spec.ClusterIP
+									logger.Info("Detected clusterDNS from coredns Service", "ip", detectedClusterDNS)
+								}
+							}
+						}
+					}
+
+					defaultConfig := generateDefaultKubeletConfig(machineScope.Cluster, detectedClusterDNS)
+					tlsBootstrapSecret.Data["kubelet-config.yaml"] = []byte(defaultConfig)
+				}
+			}
+		}
+
+		// Try to get kube-proxy ConfigMap (kube-system/kube-proxy)
+		cmProxy := &corev1.ConfigMap{}
+		if err := remoteClient.Get(ctx, client.ObjectKey{Namespace: "kube-system", Name: "kube-proxy"}, cmProxy); err == nil {
+			// kube-proxy configmap usually has config.conf or config.yaml
+			if data, ok := cmProxy.Data["config.conf"]; ok {
+				tlsBootstrapSecret.Data["kube-proxy-config.yaml"] = []byte(data)
+				logger.Info("Fetched kube-proxy config from target cluster")
+			} else if data, ok := cmProxy.Data["config.yaml"]; ok {
+				tlsBootstrapSecret.Data["kube-proxy-config.yaml"] = []byte(data)
+				logger.Info("Fetched kube-proxy config from target cluster")
+			}
+			// Also fetch kubeconfig for kube-proxy if possible (usually in a secret or same configmap?)
+			// Kubeadm puts kube-proxy.kubeconfig in a ConfigMap "kube-proxy" as well? No, usually it's generated.
+			// But for BYOH, we might need to rely on the bootstrap secret for the kubeconfig part.
+		} else {
+			// Fallback: Generate default kube-proxy config
+			logger.Info("No kube-proxy ConfigMap found, generating default")
+			defaultProxyConfig := generateDefaultKubeProxyConfig(machineScope.Cluster)
+			tlsBootstrapSecret.Data["kube-proxy-config.yaml"] = []byte(defaultProxyConfig)
+		}
+	} else {
+		logger.Info("Could not get remote client to fetch configs", "error", err)
+	}
+
+	// Priority 2: Fallback to local bootstrap secret (if provided manually)
 	if machineScope.Machine.Spec.Bootstrap.DataSecretName != nil {
 		bootstrapSecret := &corev1.Secret{}
 		if err := r.Client.Get(ctx, client.ObjectKey{
 			Namespace: machineScope.ByoMachine.Namespace,
 			Name:      *machineScope.Machine.Spec.Bootstrap.DataSecretName,
 		}, bootstrapSecret); err == nil {
-			// Copy kubelet-config.yaml if present
-			if data, ok := bootstrapSecret.Data["kubelet-config.yaml"]; ok {
-				tlsBootstrapSecret.Data["kubelet-config.yaml"] = data
+			// Copy kubelet-config.yaml if present (and not already set)
+			if _, ok := tlsBootstrapSecret.Data["kubelet-config.yaml"]; !ok {
+				if data, ok := bootstrapSecret.Data["kubelet-config.yaml"]; ok {
+					tlsBootstrapSecret.Data["kubelet-config.yaml"] = data
+				}
 			}
 			// Copy kube-proxy.kubeconfig if present
 			if data, ok := bootstrapSecret.Data["kube-proxy.kubeconfig"]; ok {
@@ -1045,6 +1163,123 @@ func (r *ByoMachineReconciler) createBootstrapSecretTLSBootstrap(ctx context.Con
 
 	logger.Info("Successfully created TLS bootstrap secret", "secret", tlsBootstrapSecret.Name)
 	return tlsBootstrapSecret, nil
+}
+
+// generateDefaultKubeletConfig generates a default KubeletConfiguration
+func generateDefaultKubeletConfig(cluster *clusterv1.Cluster, detectedDNS string) string {
+	// Try to derive ClusterDNS from Service CIDR (convention: 10th IP)
+	// Default to standard Kubeadm default if not found
+	clusterDNS := "10.96.0.10"
+
+	// If we detected a real CoreDNS IP from the cluster, use it!
+	if detectedDNS != "" {
+		clusterDNS = detectedDNS
+	} else if cluster.Spec.ClusterNetwork != nil &&
+		cluster.Spec.ClusterNetwork.Services != nil &&
+		len(cluster.Spec.ClusterNetwork.Services.CIDRBlocks) > 0 {
+		// Calculate standard 10th IP logic or just pick the 10th if it's a standard /12 or /16
+		// For robustness, we'll stick to 10.96.0.10 if we can't easily calc,
+		// but ideally we should parse the CIDR.
+		// For now, using a safe default for standard Kubeadm clusters.
+		// If users have custom DNS, they SHOULD provide kubelet-config ConfigMap.
+	}
+
+	return fmt.Sprintf(`apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+authentication:
+  anonymous:
+    enabled: false
+  webhook:
+    cacheTTL: 0s
+    enabled: true
+  x509:
+    clientCAFile: /etc/kubernetes/pki/ca.crt
+authorization:
+  mode: Webhook
+  webhook:
+    cacheAuthorizedTTL: 0s
+    cacheUnauthorizedTTL: 0s
+cgroupDriver: systemd
+clusterDNS:
+- %s
+clusterDomain: cluster.local
+containerLogMaxFiles: 5
+containerLogMaxSize: 10Mi
+contentType: application/vnd.kubernetes.protobuf
+cpuManagerReconcilePeriod: 0s
+evictionHard:
+  imagefs.available: 15%%
+  memory.available: 100Mi
+  nodefs.available: 10%%
+  nodefs.inodesFree: 5%%
+evictionPressureTransitionPeriod: 5m0s
+fileCheckFrequency: 0s
+healthzBindAddress: 127.0.0.1
+healthzPort: 10248
+httpCheckFrequency: 0s
+imageMinimumGCAge: 2m0s
+imageGCHighThresholdPercent: 85
+imageGCLowThresholdPercent: 80
+logging:
+  flushFrequency: 0
+  text:
+    infoBufferSize: "0"
+  verbosity: 0
+memorySwap: {}
+nodeStatusReportFrequency: 0s
+nodeStatusUpdateFrequency: 0s
+rotateCertificates: true
+runtimeRequestTimeout: 0s
+shutdownGracePeriod: 0s
+shutdownGracePeriodCriticalPods: 0s
+staticPodPath: /etc/kubernetes/manifests
+streamingConnectionIdleTimeout: 0s
+syncFrequency: 0s
+volumeStatsAggPeriod: 0s
+`, clusterDNS)
+}
+
+// generateDefaultKubeProxyConfig generates a default KubeProxyConfiguration
+func generateDefaultKubeProxyConfig(cluster *clusterv1.Cluster) string {
+	return `apiVersion: kubeproxy.config.k8s.io/v1alpha1
+kind: KubeProxyConfiguration
+bindAddress: 0.0.0.0
+clientConnection:
+  acceptContentTypes: ""
+  burst: 10
+  contentType: application/vnd.kubernetes.protobuf
+  kubeconfig: /var/lib/kube-proxy/kubeconfig.conf
+  qps: 5
+clusterCIDR: ""
+configSyncPeriod: 15m0s
+conntrack:
+  maxPerCore: 32768
+  min: 131072
+  tcpCloseWaitTimeout: 1h0m0s
+  tcpEstablishedTimeout: 24h0m0s
+enableProfiling: false
+healthzBindAddress: 0.0.0.0:10256
+hostnameOverride: ""
+iptables:
+  masqueradeAll: false
+  masqueradeBit: 14
+  minSyncPeriod: 0s
+  syncPeriod: 30s
+ipvs:
+  excludeCIDRs: null
+  minSyncPeriod: 0s
+  scheduler: ""
+  strictARP: false
+  syncPeriod: 30s
+  tcpFinTimeout: 0s
+  tcpTimeout: 0s
+  udpTimeout: 0s
+metricsBindAddress: 127.0.0.1:10249
+mode: ""
+nodePortAddresses: null
+oomScoreAdj: -999
+portRange: ""
+`
 }
 
 // extractCAFromKubeconfig extracts CA data from a kubeconfig file

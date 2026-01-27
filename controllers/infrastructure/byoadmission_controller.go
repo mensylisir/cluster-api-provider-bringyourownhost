@@ -62,11 +62,19 @@ func (r *ByoAdmissionReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	switch csr.Spec.SignerName {
 	case certv1.KubeAPIServerClientSignerName:
 		// Approve BYOH client certificates (byoh-csr-* format)
-		if !strings.HasPrefix(csr.Name, "byoh-csr-") {
-			logger.V(4).Info("Skipping non-BYOH client CSR", "CSR", csr.Name)
+		// Also approve standard kubelet bootstrap certificates (node-csr-* format)
+		if strings.HasPrefix(csr.Name, "byoh-csr-") {
+			logger.Info("Approving BYOH client CSR", "CSR", csr.Name)
+		} else if strings.HasPrefix(csr.Name, "node-csr-") {
+			logger.Info("Approving Kubelet bootstrap CSR", "CSR", csr.Name)
+		} else {
+			logger.V(4).Info("Skipping non-BYOH/non-bootstrap client CSR", "CSR", csr.Name)
 			return ctrl.Result{}, nil
 		}
-		logger.Info("Approving BYOH client CSR", "CSR", csr.Name)
+
+	case "kubernetes.io/kube-apiserver-client-kubelet":
+		// Approve kubelet client certificates (newer k8s versions prefer this signer)
+		logger.Info("Approving kubelet client CSR", "CSR", csr.Name)
 
 	case certv1.KubeletServingSignerName:
 		// Approve kubelet serving certificates
@@ -118,9 +126,11 @@ func (r *ByoAdmissionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				if !ok {
 					return false
 				}
-				// Accept BYOH client CSRs or kubelet serving CSRs
+				// Accept BYOH client CSRs, Kubelet bootstrap CSRs (node-csr-), or kubelet serving CSRs
 				return strings.HasPrefix(csrName, "byoh-csr-") ||
-					csr.Spec.SignerName == certv1.KubeletServingSignerName
+					strings.HasPrefix(csrName, "node-csr-") ||
+					csr.Spec.SignerName == certv1.KubeletServingSignerName ||
+					csr.Spec.SignerName == "kubernetes.io/kube-apiserver-client-kubelet"
 			},
 			UpdateFunc: func(e event.UpdateEvent) bool {
 				csrName := e.ObjectNew.GetName()
@@ -128,9 +138,11 @@ func (r *ByoAdmissionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				if !ok {
 					return false
 				}
-				// Accept BYOH client CSRs or kubelet serving CSRs
+				// Accept BYOH client CSRs, Kubelet bootstrap CSRs (node-csr-), or kubelet serving CSRs
 				return strings.HasPrefix(csrName, "byoh-csr-") ||
-					csr.Spec.SignerName == certv1.KubeletServingSignerName
+					strings.HasPrefix(csrName, "node-csr-") ||
+					csr.Spec.SignerName == certv1.KubeletServingSignerName ||
+					csr.Spec.SignerName == "kubernetes.io/kube-apiserver-client-kubelet"
 			},
 		}).
 		Complete(r)

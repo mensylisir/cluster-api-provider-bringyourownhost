@@ -52,7 +52,7 @@ var archOldNameMap = map[string]string{
 }
 
 // NewInstaller will return a new installer
-func NewInstaller(ctx context.Context, osDist, arch, k8sVersion string, downloader *bundleDownloader) (K8sInstaller, error) {
+func NewInstaller(ctx context.Context, osDist, arch, k8sVersion string, downloader *BundleDownloader) (K8sInstaller, error) {
 	bundleArchName := arch
 	// replacing the arch name to old name to match with the bundle name
 	if _, exists := archOldNameMap[arch]; exists {
@@ -82,7 +82,41 @@ func NewInstaller(ctx context.Context, osDist, arch, k8sVersion string, download
 // NewKubexmInstaller creates a new installer for kubexm (TLS Bootstrap) mode
 // This installer is used when JoinMode is "tlsBootstrap" and installs
 // Kubernetes binaries directly without using kubeadm
-func NewKubexmInstaller(ctx context.Context, osDist, arch, k8sVersion, downloadMode string, proxyConfig map[string]string) (K8sInstaller, error) {
-	// Create kubexm installer - OS-agnostic for now, can be made OS-specific later
-	return algo.NewKubexmInstaller(ctx, arch, k8sVersion, downloadMode, proxyConfig)
+func NewKubexmInstaller(ctx context.Context, osDist, arch, k8sVersion, downloadMode string, proxyConfig map[string]string, downloader *BundleDownloader) (K8sInstaller, error) {
+	// For offline mode, we need the bundle address
+	bundleArchName := arch
+	if _, exists := archOldNameMap[arch]; exists {
+		bundleArchName = archOldNameMap[arch]
+	}
+	// normalizing os image name and adding arch
+	// Note: Kubexm might be OS-agnostic, but we use the same bundle lookup logic for consistency
+	// if we want to reuse the same bundles as Kubeadm mode.
+	// For now, let's assume we reuse Ubuntu 20.04 bundle logic as a base for binary lookup if needed.
+	osArch := strings.ReplaceAll(osDist, " ", "_") + "_" + bundleArchName
+
+	reg := GetSupportedRegistry()
+	var addrs string
+	// Only try to resolve bundle if we have a valid OS match, otherwise default or error?
+	// But Kubexm is supposed to be generic.
+	// However, if we want to use imgpkg pull, we need a valid bundle address.
+	// Let's try to resolve it, if fail, maybe fallback or empty (for online mode).
+	if len(reg.ListK8s(osArch)) > 0 {
+		osbundle := reg.ResolveOsToOsBundle(osArch)
+		addrs = downloader.GetBundleAddr(osbundle, k8sVersion)
+	} else {
+		// Fallback for unknown OS or generic usage?
+		// If downloadMode is offline, we MUST have a bundle.
+		if downloadMode == "offline" {
+			// Try a default known bundle (e.g. Ubuntu 20.04) just to get the binaries?
+			// Or return error.
+			// Let's assume Ubuntu 20.04 as a safe default for Linux binaries.
+			defaultOS := "Ubuntu_20.04" + "_" + bundleArchName
+			if len(reg.ListK8s(defaultOS)) > 0 {
+				osbundle := reg.ResolveOsToOsBundle(defaultOS)
+				addrs = downloader.GetBundleAddr(osbundle, k8sVersion)
+			}
+		}
+	}
+
+	return algo.NewKubexmInstaller(ctx, arch, addrs, k8sVersion, downloadMode, proxyConfig)
 }

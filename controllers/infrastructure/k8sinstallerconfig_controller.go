@@ -167,6 +167,9 @@ func (r *K8sInstallerConfigReconciler) reconcileNormal(ctx context.Context, scop
 		// Get proxy configuration from ByoCluster annotations
 		proxyConfig := r.getProxyConfig(ctx, scope)
 
+		// Use standard downloader for offline support
+		downloader := installer.NewBundleDownloader(scope.Config.Spec.BundleType, scope.Config.Spec.BundleRepo, "{{.BUNDLE_DOWNLOAD_PATH}}", logger)
+
 		installerObj, err = installer.NewKubexmInstaller(
 			ctx,
 			scope.ByoMachine.Status.HostInfo.OSImage,
@@ -174,6 +177,7 @@ func (r *K8sInstallerConfigReconciler) reconcileNormal(ctx context.Context, scop
 			k8sVersion,
 			downloadMode,
 			proxyConfig,
+			downloader,
 		)
 		if err != nil {
 			logger.Error(err, "failed to create kubexm installer instance", "osImage", scope.ByoMachine.Status.HostInfo.OSImage, "architecture", scope.ByoMachine.Status.HostInfo.Architecture, "k8sVersion", k8sVersion, "downloadMode", downloadMode)
