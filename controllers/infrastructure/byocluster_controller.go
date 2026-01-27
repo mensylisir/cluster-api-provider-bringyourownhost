@@ -180,25 +180,28 @@ func (r ByoClusterReconciler) reconcileNormal(ctx context.Context, byoCluster *i
 	// Check if this is an "unmanaged" cluster (no ControlPlaneRef), typical for BYOH/binary setups
 	// If so, we must manually patch the CAPI Cluster status to unblock downstream controllers
 	if cluster.Spec.ControlPlaneRef == nil {
-		logger := log.FromContext(ctx)
+		// Only patch if status fields are missing to avoid unnecessary API calls
+		if !cluster.Status.ControlPlaneInitialized || !cluster.Status.ControlPlaneReady || !cluster.Status.InfrastructureReady {
+			logger := log.FromContext(ctx)
 
-		// Initialize the patch helper for the CAPI Cluster
-		patchHelper, err := patch.NewHelper(cluster, r.Client)
-		if err != nil {
-			return reconcile.Result{}, errors.Wrap(err, "failed to init patch helper for Cluster")
+			// Initialize the patch helper for the CAPI Cluster
+			patchHelper, err := patch.NewHelper(cluster, r.Client)
+			if err != nil {
+				return reconcile.Result{}, errors.Wrap(err, "failed to init patch helper for Cluster")
+			}
+
+			// Set the required status fields to trick CAPI into thinking the control plane is ready
+			cluster.Status.InfrastructureReady = true
+			cluster.Status.ControlPlaneInitialized = true
+			cluster.Status.ControlPlaneReady = true
+
+			// Apply the patch
+			if err := patchHelper.Patch(ctx, cluster); err != nil {
+				logger.Error(err, "failed to patch Cluster status for unmanaged control plane")
+				return reconcile.Result{}, err
+			}
+			logger.Info("Successfully patched Cluster status for unmanaged control plane", "cluster", cluster.Name)
 		}
-
-		// Set the required status fields to trick CAPI into thinking the control plane is ready
-		cluster.Status.InfrastructureReady = true
-		cluster.Status.ControlPlaneInitialized = true
-		cluster.Status.ControlPlaneReady = true
-
-		// Apply the patch
-		if err := patchHelper.Patch(ctx, cluster); err != nil {
-			logger.Error(err, "failed to patch Cluster status for unmanaged control plane")
-			return reconcile.Result{}, err
-		}
-		logger.Info("Successfully patched Cluster status for unmanaged control plane", "cluster", cluster.Name)
 	}
 
 	return reconcile.Result{}, nil
