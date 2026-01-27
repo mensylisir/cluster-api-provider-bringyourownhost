@@ -208,10 +208,14 @@ spec:
       downloadMode: online    # online (在线下载) 或 offline (使用本地二进制)
       kubernetesVersion: v1.26.0
       manageKubeProxy: true   # 是否由 Agent 管理 kube-proxy 进程
+
+      # 注意：Kubexm 模式支持自动同步 kubelet-config.yaml 和 kube-proxy 配置。
+      # 如果您的 Bootstrap Secret 中包含这些配置，Agent 会自动应用它们。
 ```
 
 > **⚠️ Kubexm 离线模式特别说明**：
-> 如果设置 `downloadMode: offline`，您必须提前手动将 k8s 二进制文件 (`kubelet`, `kube-proxy`, `kubectl`) 放置在物理机的 `/usr/local/bin/` 目录下，否则 Agent 启动会失败。
+> 1. 如果设置 `downloadMode: offline`，您必须提前手动将 k8s 二进制文件 (`kubelet`, `kube-proxy`, `kubectl`) 放置在物理机的 `/usr/local/bin/` 目录下，否则 Agent 启动会失败。
+> 2. **清理逻辑安全增强**：Agent 现在会检测环境。如果未发现 `kubeadm`，在重置节点时将执行“软清理”（停止服务并删除配置），而不会尝试运行 `kubeadm reset`，这完美适配纯二进制部署环境。
 
 ---
 

@@ -477,13 +477,50 @@ func (r *HostReconciler) hostCleanUp(ctx context.Context, byoHost *infrastructur
 
 func (r *HostReconciler) resetNode(ctx context.Context, byoHost *infrastructurev1beta1.ByoHost) error {
 	logger := ctrl.LoggerFrom(ctx)
-	logger.Info("Running kubeadm reset")
+	logger.Info("Resetting k8s Node")
 
-	err := r.CmdRunner.RunCmd(ctx, KubeadmResetCommand)
-	if err != nil {
-		r.Recorder.Event(byoHost, corev1.EventTypeWarning, "ResetK8sNodeFailed", "k8s Node Reset failed")
-		return errors.Wrapf(err, "failed to exec kubeadm reset")
+	// Try to run kubeadm reset if it exists
+	path, err := exec.LookPath("kubeadm")
+	if err == nil && path != "" {
+		logger.Info("Found kubeadm, running kubeadm reset")
+		err := r.CmdRunner.RunCmd(ctx, KubeadmResetCommand)
+		if err != nil {
+			logger.Error(err, "kubeadm reset failed, falling back to manual cleanup")
+		}
+	} else {
+		logger.Info("kubeadm not found, performing manual cleanup")
 	}
+
+	// Manual cleanup (Stop services and remove files)
+	// This handles both binary installations and failed kubeadm resets
+
+	// 1. Stop services
+	_ = r.CmdRunner.RunCmd(ctx, "systemctl stop kubelet")
+	if byoHost.Spec.ManageKubeProxy {
+		_ = r.CmdRunner.RunCmd(ctx, "systemctl stop kube-proxy")
+	}
+
+	// 2. Clean up files
+	filesToRemove := []string{
+		"/etc/kubernetes/bootstrap-kubeconfig",
+		"/etc/kubernetes/kubelet.conf",
+		"/etc/kubernetes/pki/ca.crt",
+		"/var/lib/kubelet/config.yaml",
+		"/etc/kubernetes/kube-proxy.kubeconfig",
+		"/etc/kubernetes/kube-proxy-config.yaml",
+	}
+
+	for _, f := range filesToRemove {
+		if err := os.Remove(f); err != nil && !os.IsNotExist(err) {
+			logger.V(4).Info("Failed to remove file", "file", f, "error", err)
+		}
+	}
+
+	// 3. Remove pki directory
+	if err := os.RemoveAll("/var/lib/kubelet/pki"); err != nil {
+		logger.V(4).Info("Failed to remove pki dir", "dir", "/var/lib/kubelet/pki", "error", err)
+	}
+
 	logger.Info("Kubernetes Node reset completed")
 	r.Recorder.Event(byoHost, corev1.EventTypeNormal, "ResetK8sNodeSucceeded", "k8s Node Reset completed")
 	return nil

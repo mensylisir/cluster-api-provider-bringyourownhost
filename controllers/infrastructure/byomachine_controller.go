@@ -1021,6 +1021,24 @@ func (r *ByoMachineReconciler) createBootstrapSecretTLSBootstrap(ctx context.Con
 		tlsBootstrapSecret.Data["bootstrap-kubeconfig"] = bootstrapKubeconfigData
 	}
 
+	// Try to fetch additional configurations (kubelet-config, kube-proxy) from the bootstrap secret
+	if machineScope.Machine.Spec.Bootstrap.DataSecretName != nil {
+		bootstrapSecret := &corev1.Secret{}
+		if err := r.Client.Get(ctx, client.ObjectKey{
+			Namespace: machineScope.ByoMachine.Namespace,
+			Name:      *machineScope.Machine.Spec.Bootstrap.DataSecretName,
+		}, bootstrapSecret); err == nil {
+			// Copy kubelet-config.yaml if present
+			if data, ok := bootstrapSecret.Data["kubelet-config.yaml"]; ok {
+				tlsBootstrapSecret.Data["kubelet-config.yaml"] = data
+			}
+			// Copy kube-proxy.kubeconfig if present
+			if data, ok := bootstrapSecret.Data["kube-proxy.kubeconfig"]; ok {
+				tlsBootstrapSecret.Data["kube-proxy.kubeconfig"] = data
+			}
+		}
+	}
+
 	if err := r.Client.Create(ctx, tlsBootstrapSecret); err != nil {
 		return nil, fmt.Errorf("failed to create TLS bootstrap secret: %w", err)
 	}
