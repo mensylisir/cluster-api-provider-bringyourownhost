@@ -248,6 +248,23 @@ func (r *ByoMachineReconciler) reconcileDelete(ctx context.Context, machineScope
 	logger := log.FromContext(ctx).WithValues("cluster", machineScope.Cluster.Name)
 	logger.Info("Deleting ByoMachine")
 
+	// If ByoHost is not found via label (e.g., stale label from previous Machine),
+	// try to find it by matching machineRef.UID with byoMachine.UID
+	if machineScope.ByoHost == nil {
+		hostsList := &infrav1.ByoHostList{}
+		if err := r.Client.List(ctx, hostsList); err != nil {
+			return reconcile.Result{}, err
+		}
+		for i := range hostsList.Items {
+			host := &hostsList.Items[i]
+			if host.Status.MachineRef != nil && host.Status.MachineRef.UID == machineScope.ByoMachine.UID {
+				logger.Info("Found ByoHost via machineRef UID match", "byohost", host.Name)
+				machineScope.ByoHost = host
+				break
+			}
+		}
+	}
+
 	// Check if there's an associated ByoHost
 	if machineScope.ByoHost != nil {
 		// Check if ByoHost is already marked for deletion
