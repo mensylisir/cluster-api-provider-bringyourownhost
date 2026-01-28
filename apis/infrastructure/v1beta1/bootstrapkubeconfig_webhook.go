@@ -43,14 +43,21 @@ func (r *BootstrapKubeconfig) Default() {
 // +k8s:deepcopy-gen=false
 // BootstrapKubeconfigMutatingWebhook handles admission requests
 type BootstrapKubeconfigMutatingWebhook struct {
-	Client client.Client
+	Client  client.Client
+	decoder *admission.Decoder
+}
+
+// InjectDecoder injects the decoder.
+func (wh *BootstrapKubeconfigMutatingWebhook) InjectDecoder(d *admission.Decoder) error {
+	wh.decoder = d
+	return nil
 }
 
 func (wh *BootstrapKubeconfigMutatingWebhook) Handle(ctx context.Context, req admission.Request) admission.Response {
 	bootstrapkubeconfiglog.Info("mutating webhook called", "name", req.Name)
 
 	obj := &BootstrapKubeconfig{}
-	if err := json.Unmarshal(req.Object.Raw, obj); err != nil {
+	if err := wh.decoder.Decode(req, obj); err != nil {
 		return admission.Errored(http.StatusBadRequest, err)
 	}
 
