@@ -79,6 +79,15 @@ const (
 	// InstallationSecretNotAvailableReason indicates that the installation secret is not yet
 	// generated for a given BYOMachine
 	InstallationSecretNotAvailableReason = "InstallationSecretNotAvailable"
+
+	// WaitingForClusterAccessReason indicates waiting for access to external cluster
+	WaitingForClusterAccessReason = "WaitingForClusterAccess"
+
+	// BootstrapSecretCreationFailedReason indicates failed to create bootstrap secret
+	BootstrapSecretCreationFailedReason = "BootstrapSecretCreationFailed"
+
+	// FeatureNotSupportedReason indicates the requested feature is not yet supported
+	FeatureNotSupportedReason = "FeatureNotSupported"
 )
 
 // Reasons common to all Byo Resources

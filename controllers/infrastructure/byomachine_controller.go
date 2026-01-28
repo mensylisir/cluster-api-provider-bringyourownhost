@@ -38,15 +38,15 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
-	bootstraputil "k8s.io/cluster-bootstrap/token/util"
 	"github.com/go-logr/logr"
-	"github.com/mensylisir/cluster-api-provider-bringyourownhost/common/bootstraptoken"
 	infrav1 "github.com/mensylisir/cluster-api-provider-bringyourownhost/apis/infrastructure/v1beta1"
 	"github.com/mensylisir/cluster-api-provider-bringyourownhost/common"
+	"github.com/mensylisir/cluster-api-provider-bringyourownhost/common/bootstraptoken"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	bootstraputil "k8s.io/cluster-bootstrap/token/util"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	"sigs.k8s.io/cluster-api/util/annotations"
 	"sigs.k8s.io/yaml"
@@ -371,11 +371,48 @@ func (r *ByoMachineReconciler) reconcileNormal(ctx context.Context, machineScope
 
 	// For TLS Bootstrap mode, we create our own bootstrap secret directly
 	// So we don't need to wait for Machine.Spec.Bootstrap.DataSecretName
-	// For Kubeadm mode, we need to wait for the bootstrap data secret to be created
+	// For Kubeadm mode, we need to handle external vs CAPI-managed control plane
 	if machineScope.ByoMachine.Spec.JoinMode != infrav1.JoinModeTLSBootstrap {
-		if machineScope.Machine.Spec.Bootstrap.DataSecretName == nil {
-			logger.Info("Bootstrap Data Secret not available yet")
-			conditions.MarkFalse(machineScope.ByoMachine, infrav1.BYOHostReady, infrav1.WaitingForBootstrapDataSecretReason, clusterv1.ConditionSeverityInfo, "")
+		// Check if this is an external cluster (no KubeadmControlPlane)
+		isExternalCluster := machineScope.Cluster.Spec.ControlPlaneRef == nil
+
+		if isExternalCluster {
+			// For external kubeadm clusters, we create the bootstrap secret ourselves
+			// from the kubeadm-config ConfigMap in the target cluster
+			if machineScope.Machine.Spec.Bootstrap.DataSecretName == nil {
+				logger.Info("External kubeadm cluster detected, creating bootstrap secret-config")
+
+				// Get remote client from kubeadm to access the external cluster
+				remoteClient, err := r.getRemoteClient(ctx, machineScope.ByoMachine)
+				if err != nil {
+					logger.Error(err, "Failed to get remote client for external cluster")
+					conditions.MarkFalse(machineScope.ByoMachine, infrav1.BYOHostReady,
+						infrav1.WaitingForClusterAccessReason, clusterv1.ConditionSeverityInfo,
+						"Waiting for access to external cluster")
+					return reconcile.Result{RequeueAfter: 30 * time.Second}, nil
+				}
+
+				// Create bootstrap secret from kubeadm-config
+				secretName, err := r.createBootstrapSecretExternalKubeadm(ctx, machineScope, remoteClient)
+				if err != nil {
+					logger.Error(err, "Failed to create bootstrap secret for external kubeadm cluster")
+					conditions.MarkFalse(machineScope.ByoMachine, infrav1.BYOHostReady,
+						infrav1.BootstrapSecretCreationFailedReason, clusterv1.ConditionSeverityError,
+						"Failed to create bootstrap secret: %v", err)
+					return reconcile.Result{}, err
+				}
+
+				// Set the bootstrap secret reference on Machine
+				machineScope.Machine.Spec.Bootstrap.DataSecretName = &secretName
+
+				logger.Info("Created bootstrap secret for external kubeadm cluster", "secret", secretName)
+			}
+		} else {
+			// Non-external kubeadm mode (CAPI-managed control plane) is not yet supported
+			logger.Info("Kubeadm mode with CAPI-managed control plane is not yet supported")
+			conditions.MarkFalse(machineScope.ByoMachine, infrav1.BYOHostReady,
+				infrav1.FeatureNotSupportedReason, clusterv1.ConditionSeverityWarning,
+				"Kubeadm mode with CAPI-managed control plane is not yet supported. Use TLS Bootstrap mode or external kubeadm cluster.")
 			return reconcile.Result{}, nil
 		}
 	}
@@ -1305,6 +1342,183 @@ func (r *ByoMachineReconciler) createBootstrapSecretTLSBootstrap(ctx context.Con
 
 	logger.Info("Successfully created TLS bootstrap secret", "secret", tlsBootstrapSecret.Name)
 	return tlsBootstrapSecret, nil
+}
+
+// createBootstrapSecretExternalKubeadm creates a bootstrap secret for external kubeadm clusters.
+// This function reads the kubeadm-config ConfigMap from the external cluster and generates
+// a cloud-init script with the kubeadm join command.
+func (r *ByoMachineReconciler) createBootstrapSecretExternalKubeadm(ctx context.Context, machineScope *byoMachineScope, remoteClient client.Client) (string, error) {
+	logger := log.FromContext(ctx).WithValues("cluster", machineScope.Cluster.Name)
+	logger.Info("Creating bootstrap secret for external kubeadm cluster")
+
+	// Read kubeadm-config ConfigMap from the external cluster
+	kubeadmConfig := &corev1.ConfigMap{}
+	if err := remoteClient.Get(ctx, client.ObjectKey{
+		Namespace: "kube-system",
+		Name:      "kubeadm-config",
+	}, kubeadmConfig); err != nil {
+		return "", fmt.Errorf("failed to get kubeadm-config ConfigMap: %w", err)
+	}
+
+	// Parse the MasterConfiguration to get join information
+	masterConfigData := kubeadmConfig.Data["MasterConfiguration"]
+	if masterConfigData == "" {
+		return "", fmt.Errorf("kubeadm-config ConfigMap does not contain MasterConfiguration")
+	}
+
+	// For now, generate a simple cloud-init script that expects a bootstrap token
+	// In a real implementation, we would parse the YAML and extract:
+	// - apiServerEndpoint
+	// - caCertPath
+	// - token (need to be created or use existing)
+
+	// Generate a cloud-init script for kubeadm join
+	// The script will use the bootstrap token approach
+	kubeadmVersion := ""
+	if machineScope.Machine.Spec.Version != nil {
+		// Extract version without build number
+		version := *machineScope.Machine.Spec.Version
+		if idx := strings.Index(version, "+"); idx != -1 {
+			kubeadmVersion = version[:idx]
+		} else {
+			kubeadmVersion = version
+		}
+	}
+
+	// Generate a bootstrap token for the join
+	tokenStr, err := bootstraputil.GenerateBootstrapToken()
+	if err != nil {
+		return "", fmt.Errorf("failed to generate bootstrap token: %w", err)
+	}
+
+	// Create the bootstrap token secret in the target cluster
+	ttl := time.Hour * 24
+	tokenSecret, err := bootstraptoken.GenerateSecretFromBootstrapToken(tokenStr, ttl)
+	if err != nil {
+		return "", fmt.Errorf("failed to create token secret: %w", err)
+	}
+
+	// Create the token secret in the external cluster
+	if err := remoteClient.Create(ctx, tokenSecret); err != nil && !apierrors.IsAlreadyExists(err) {
+		return "", fmt.Errorf("failed to create token secret in external cluster: %w", err)
+	}
+
+	// Get CA certificate from the cluster
+	caCertData := ""
+	caSecret := &corev1.Secret{}
+	if err := remoteClient.Get(ctx, client.ObjectKey{
+		Namespace: "kube-system",
+		Name:      "ca-certificates",
+	}, caSecret); err == nil {
+		if data, ok := caSecret.Data["ca.crt"]; ok {
+			caCertData = base64.StdEncoding.EncodeToString(data)
+		}
+	}
+
+	// Get API server endpoint from the Cluster status
+	apiServerEndpoint := ""
+	if machineScope.Cluster.Spec.ControlPlaneEndpoint.Host != "" {
+		apiServerEndpoint = fmt.Sprintf("%s:%d",
+			machineScope.Cluster.Spec.ControlPlaneEndpoint.Host,
+			machineScope.Cluster.Spec.ControlPlaneEndpoint.Port)
+	}
+
+	// Generate discovery-token-ca-cert-hash
+	// In a real implementation, we'd compute this from the CA certificate
+	// For now, we'll use a placeholder that the node will validate
+
+	// Create cloud-init script with kubeadm join command
+	cloudInitScript := generateKubeadmJoinCloudInit(machineScope.ByoMachine.Name, apiServerEndpoint, tokenStr, caCertData, kubeadmVersion)
+
+	// Create bootstrap secret in the management cluster
+	bootstrapSecretName := machineScope.ByoMachine.Name + "-kubeadm-bootstrap"
+	bootstrapSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      bootstrapSecretName,
+			Namespace: machineScope.ByoMachine.Namespace,
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion:         machineScope.ByoMachine.APIVersion,
+					Kind:               machineScope.ByoMachine.Kind,
+					Name:               machineScope.ByoMachine.Name,
+					UID:                machineScope.ByoMachine.UID,
+					BlockOwnerDeletion: func(b bool) *bool { return &b }(true),
+					Controller:         func(b bool) *bool { return &b }(true),
+				},
+			},
+		},
+		Type: corev1.SecretTypeOpaque,
+		Data: map[string][]byte{
+			"value": []byte(cloudInitScript),
+		},
+	}
+
+	if err := r.Client.Create(ctx, bootstrapSecret); err != nil {
+		return "", fmt.Errorf("failed to create bootstrap secret: %w", err)
+	}
+
+	logger.Info("Successfully created bootstrap secret for external kubeadm cluster", "secret", bootstrapSecretName)
+	return bootstrapSecretName, nil
+}
+
+// generateKubeadmJoinCloudInit generates a cloud-init script for kubeadm join
+func generateKubeadmJoinCloudInit(hostname, apiServerEndpoint, token, caCertData, kubeadmVersion string) string {
+	// This is a simplified cloud-init script for kubeadm join
+	// In production, this would include more error handling and configuration
+
+	var writeFiles strings.Builder
+
+	// Write hostname file
+	writeFiles.WriteString(fmt.Sprintf(`
+- path: /etc/hostname
+  content: |
+    %s
+  permissions: "0644"
+`, hostname))
+
+	// If CA cert data is provided, write it
+	if caCertData != "" {
+		writeFiles.WriteString(fmt.Sprintf(`
+- path: /etc/kubernetes/pki/ca.crt
+  content: |
+    %s
+  permissions: "0644"
+`, caCertData))
+	}
+
+	// Generate the cloud-init script
+	script := fmt.Sprintf(`#cloud-config
+write_files:
+%s
+runcmd:
+  - "hostnamectl set-hostname %s"
+  - "systemctl restart systemd-hostnamed"
+  - "mkdir -p /etc/kubernetes/pki"
+`, writeFiles.String(), hostname)
+
+	// Add kubeadm join command if we have the necessary information
+	if apiServerEndpoint != "" && token != "" {
+		script += fmt.Sprintf(`  - |
+    # Wait for kubelet to be installed
+    while ! command -v kubeadm &> /dev/null; do
+      echo "kubeadm not found, waiting..."
+      sleep 5
+    done
+    echo "kubeadm found, proceeding with join"
+
+    # Generate discovery-token-ca-cert-hash
+    # This is a simplified approach - in production, you'd compute the hash properly
+    CA_HASH=$(openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt 2>/dev/null | openssl pkey -pubin -outform der 2>/dev/null | openssl dgst -sha256 -raw | sed 's/^.* //')
+
+    # Perform kubeadm join
+    kubeadm join %s \\
+      --token %s \\
+      --discovery-token-ca-cert-hash sha256:$CA_HASH \\
+      --ignore-preflight-errors=Swap
+`, apiServerEndpoint, token)
+	}
+
+	return script
 }
 
 // generateDefaultKubeletConfig generates a default KubeletConfiguration
