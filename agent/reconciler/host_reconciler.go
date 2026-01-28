@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -679,20 +680,40 @@ func (r *HostReconciler) bootstrapK8sNodeTLS(ctx context.Context, byoHost *infra
 	}
 
 	// Write CA certificate
+	var caCertData string
 	if caCrt, ok := secret.Data["ca.crt"]; ok {
-		caPath := "/etc/kubernetes/pki/ca.crt"
-		// Create parent directory if it doesn't exist
-		if err := r.FileWriter.MkdirIfNotExists("/etc/kubernetes/pki"); err != nil {
-			return fmt.Errorf("failed to create /etc/kubernetes/pki directory: %w", err)
+		caCertData = string(caCrt)
+	} else if bootstrapKubeconfig, ok := secret.Data["bootstrap-kubeconfig"]; ok {
+		// Extract CA data from bootstrap-kubeconfig
+		caCertData = extractCACertificate(string(bootstrapKubeconfig))
+	}
+
+	if caCertData != "" {
+		// Write CA certificate to multiple common paths
+		caPaths := []string{
+			"/etc/kubernetes/pki/ca.crt",
+			"/etc/kubernetes/ssl/ca.pem",
+			"/etc/kubernetes/pki/ca-certificates.crt",
+			"/etc/ssl/certs/ca-certificates.crt",
 		}
-		if err := r.FileWriter.WriteToFile(&cloudinit.Files{
-			Path:        caPath,
-			Content:     string(caCrt),
-			Permissions: "0644",
-		}); err != nil {
-			return fmt.Errorf("failed to write CA certificate: %w", err)
+
+		for _, caPath := range caPaths {
+			// Create parent directory if it doesn't exist
+			caDir := filepath.Dir(caPath)
+			if err := r.FileWriter.MkdirIfNotExists(caDir); err != nil {
+				logger.V(4).Info("failed to create CA directory", "dir", caDir, "error", err)
+				continue
+			}
+			if err := r.FileWriter.WriteToFile(&cloudinit.Files{
+				Path:        caPath,
+				Content:     caCertData,
+				Permissions: "0644",
+			}); err != nil {
+				logger.V(4).Info("failed to write CA certificate", "path", caPath, "error", err)
+				continue
+			}
+			logger.Info("Wrote CA certificate", "path", caPath)
 		}
-		logger.Info("Wrote CA certificate", "path", caPath)
 	}
 
 	// Write bootstrap kubeconfig
@@ -1169,4 +1190,22 @@ WantedBy=multi-user.target
 
 	logger.Info("Successfully started kube-proxy service")
 	return nil
+}
+
+// extractCACertificate extracts the CA certificate data from a kubeconfig string
+func extractCACertificate(kubeconfigContent string) string {
+	// Parse the kubeconfig
+	config, err := clientcmd.Load([]byte(kubeconfigContent))
+	if err != nil {
+		return ""
+	}
+
+	// Get CA data from the first cluster
+	for _, cluster := range config.Clusters {
+		if len(cluster.CertificateAuthorityData) > 0 {
+			return string(cluster.CertificateAuthorityData)
+		}
+	}
+
+	return ""
 }
