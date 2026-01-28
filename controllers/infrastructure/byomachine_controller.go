@@ -712,6 +712,14 @@ func (r *ByoMachineReconciler) attachByoHost(ctx context.Context, machineScope *
 							logger.Error(patchErr, "failed to clear stale MachineRef", "byohost", latestHost.Name)
 						}
 					}
+
+					// Re-fetch the host from API server to get the latest version
+					// This is necessary because tryAcquireLease uses Update which requires current ResourceVersion
+					if err := r.Client.Get(ctx, client.ObjectKey{Namespace: latestHost.Namespace, Name: latestHost.Name}, latestHost); err != nil {
+						logger.Error(err, "failed to re-fetch byohost after clearing stale machineRef", "byohost", latestHost.Name)
+						time.Sleep(exponentialBackoff(attempt))
+						continue
+					}
 					// Proceed to claim this host
 				} else {
 					// Error checking ByoMachine, skip this host
