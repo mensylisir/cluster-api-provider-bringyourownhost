@@ -1022,16 +1022,18 @@ func (r *ByoMachineReconciler) createBootstrapSecretTLSBootstrap(ctx context.Con
 	// from the local cluster (where this controller is running)
 	// Only generate if BOTH caData and bootstrapKubeconfigData are nil
 	// This prevents overriding data already obtained from BootstrapKubeconfig in Method 2
+	var generatedTokenStr string
 	if caData == nil && bootstrapKubeconfigData == nil {
 		logger.V(4).Info("Generating bootstrap kubeconfig from local cluster for TLS Bootstrap mode")
 
 		// Get the in-cluster config to create a bootstrap kubeconfig
 		restConfig, err := clientcmd.DefaultClientConfig.ClientConfig()
 		if err == nil {
-			bootstrapKubeconfigContent, err := generateBootstrapKubeconfig(ctx, restConfig, r.Client)
+			bootstrapKubeconfigContent, tokenStr, err := generateBootstrapKubeconfigWithToken(ctx, restConfig, r.Client)
 			if err == nil {
 				logger.Info("Generated bootstrap kubeconfig with new bootstrap token")
 				bootstrapKubeconfigData = []byte(bootstrapKubeconfigContent)
+				generatedTokenStr = tokenStr
 
 				// Extract CA from the generated kubeconfig
 				if caData == nil {
@@ -1216,6 +1218,16 @@ func (r *ByoMachineReconciler) createBootstrapSecretTLSBootstrap(ctx context.Con
 		}
 	}
 
+	// Generate kube-proxy.kubeconfig if we have a generated token and no existing kube-proxy.kubeconfig
+	if _, ok := tlsBootstrapSecret.Data["kube-proxy.kubeconfig"]; !ok && generatedTokenStr != "" {
+		restConfig, err := clientcmd.DefaultClientConfig.ClientConfig()
+		if err == nil {
+			kubeProxyKubeconfig := generateKubeProxyKubeconfig(restConfig, generatedTokenStr)
+			tlsBootstrapSecret.Data["kube-proxy.kubeconfig"] = []byte(kubeProxyKubeconfig)
+			logger.Info("Generated kube-proxy.kubeconfig with bootstrap token")
+		}
+	}
+
 	if err := r.Client.Create(ctx, tlsBootstrapSecret); err != nil {
 		return nil, fmt.Errorf("failed to create TLS bootstrap secret: %w", err)
 	}
@@ -1342,25 +1354,30 @@ portRange: ""
 }
 
 // generateBootstrapKubeconfig creates a kubeconfig for TLS bootstrap
-// using a newly generated bootstrap token
 func generateBootstrapKubeconfig(ctx context.Context, restConfig *rest.Config, client client.Client) (string, error) {
+	kubeconfig, _, err := generateBootstrapKubeconfigWithToken(ctx, restConfig, client)
+	return kubeconfig, err
+}
+
+// generateBootstrapKubeconfigWithToken creates a kubeconfig and returns the token used
+func generateBootstrapKubeconfigWithToken(ctx context.Context, restConfig *rest.Config, client client.Client) (string, string, error) {
 	// Generate a new bootstrap token
 	tokenStr, err := bootstraputil.GenerateBootstrapToken()
 	if err != nil {
-		return "", fmt.Errorf("failed to generate bootstrap token: %w", err)
+		return "", "", fmt.Errorf("failed to generate bootstrap token: %w", err)
 	}
 
 	// Create bootstrap token secret
 	ttl := time.Minute * 30
 	tokenSecret, err := bootstraptoken.GenerateSecretFromBootstrapToken(tokenStr, ttl)
 	if err != nil {
-		return "", fmt.Errorf("failed to create token secret: %w", err)
+		return "", "", fmt.Errorf("failed to create token secret: %w", err)
 	}
 
 	// Create the secret in the cluster
 	if err := client.Create(ctx, tokenSecret); err != nil {
 		if !apierrors.IsAlreadyExists(err) {
-			return "", fmt.Errorf("failed to create token secret: %w", err)
+			return "", "", fmt.Errorf("failed to create token secret: %w", err)
 		}
 	}
 
@@ -1389,7 +1406,35 @@ users:
     token: %s
 `, caData, restConfig.Host, tokenStr)
 
-	return kubeconfigYAML, nil
+	return kubeconfigYAML, tokenStr, nil
+}
+
+// generateKubeProxyKubeconfig creates a kubeconfig for kube-proxy using the same bootstrap token
+func generateKubeProxyKubeconfig(restConfig *rest.Config, tokenStr string) string {
+	var caData string
+	if len(restConfig.CAData) > 0 {
+		caData = base64.StdEncoding.EncodeToString(restConfig.CAData)
+	}
+
+	return fmt.Sprintf(`apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    certificate-authority-data: %s
+    server: %s
+  name: default-cluster
+contexts:
+- context:
+    cluster: default-cluster
+    namespace: default
+    user: default-auth
+  name: default-context
+current-context: default-context
+users:
+- name: default-auth
+  user:
+    token: %s
+`, caData, restConfig.Host, tokenStr)
 }
 
 // extractCAFromKubeconfig extracts CA data from a kubeconfig file
