@@ -40,6 +40,7 @@ import (
 
 	bootstraputil "k8s.io/cluster-bootstrap/token/util"
 	"github.com/go-logr/logr"
+	"github.com/mensylisir/cluster-api-provider-bringyourownhost/common/bootstraptoken"
 	infrav1 "github.com/mensylisir/cluster-api-provider-bringyourownhost/apis/infrastructure/v1beta1"
 	"github.com/mensylisir/cluster-api-provider-bringyourownhost/common"
 	appsv1 "k8s.io/api/apps/v1"
@@ -1027,8 +1028,7 @@ func (r *ByoMachineReconciler) createBootstrapSecretTLSBootstrap(ctx context.Con
 		// Get the in-cluster config to create a bootstrap kubeconfig
 		restConfig, err := clientcmd.DefaultClientConfig.ClientConfig()
 		if err == nil {
-			// Create a bootstrap kubeconfig using a newly generated bootstrap token
-			bootstrapKubeconfigContent, tokenStr, err := generateBootstrapKubeconfig(ctx, restConfig, r.Client)
+			bootstrapKubeconfigContent, err := generateBootstrapKubeconfig(ctx, restConfig, r.Client)
 			if err == nil {
 				logger.Info("Generated bootstrap kubeconfig with new bootstrap token")
 				bootstrapKubeconfigData = []byte(bootstrapKubeconfigContent)
@@ -1342,25 +1342,25 @@ portRange: ""
 }
 
 // generateBootstrapKubeconfig creates a kubeconfig for TLS bootstrap
-// using a newly generated bootstrap token instead of the controller's bearer token
-func generateBootstrapKubeconfig(ctx context.Context, restConfig *rest.Config, client client.Client) (string, string, error) {
+// using a newly generated bootstrap token
+func generateBootstrapKubeconfig(ctx context.Context, restConfig *rest.Config, client client.Client) (string, error) {
 	// Generate a new bootstrap token
 	tokenStr, err := bootstraputil.GenerateBootstrapToken()
 	if err != nil {
-		return "", "", fmt.Errorf("failed to generate bootstrap token: %w", err)
+		return "", fmt.Errorf("failed to generate bootstrap token: %w", err)
 	}
 
 	// Create bootstrap token secret
 	ttl := time.Minute * 30
 	tokenSecret, err := bootstraptoken.GenerateSecretFromBootstrapToken(tokenStr, ttl)
 	if err != nil {
-		return "", "", fmt.Errorf("failed to create token secret: %w", err)
+		return "", fmt.Errorf("failed to create token secret: %w", err)
 	}
 
 	// Create the secret in the cluster
 	if err := client.Create(ctx, tokenSecret); err != nil {
 		if !apierrors.IsAlreadyExists(err) {
-			return "", "", fmt.Errorf("failed to create token secret: %w", err)
+			return "", fmt.Errorf("failed to create token secret: %w", err)
 		}
 	}
 
@@ -1389,7 +1389,7 @@ users:
     token: %s
 `, caData, restConfig.Host, tokenStr)
 
-	return kubeconfigYAML, tokenStr, nil
+	return kubeconfigYAML, nil
 }
 
 // extractCAFromKubeconfig extracts CA data from a kubeconfig file
