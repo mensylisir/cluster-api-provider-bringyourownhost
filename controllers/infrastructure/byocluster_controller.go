@@ -5,11 +5,17 @@ package controllers
 
 import (
 	"context"
+	"encoding/base64"
+	"fmt"
 	"reflect"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -179,6 +185,59 @@ func (r ByoClusterReconciler) reconcileNormal(ctx context.Context, byoCluster *i
 
 	logger := log.FromContext(ctx)
 
+	// Create or update the kubeconfig secret for this cluster
+	// This secret is used by ByoMachine controller to communicate with the target cluster
+	kubeconfigSecretName := byoCluster.Name + "-kubeconfig"
+	kubeconfigSecret := &corev1.Secret{}
+	if err := r.Client.Get(ctx, client.ObjectKey{
+		Namespace: byoCluster.Namespace,
+		Name:      kubeconfigSecretName,
+	}, kubeconfigSecret); err != nil {
+		if apierrors.IsNotFound(err) {
+			// Create the kubeconfig secret using the in-cluster config
+			logger.Info("Creating kubeconfig secret for cluster", "secret", kubeconfigSecretName)
+
+			// Get the in-cluster configuration
+			restConfig, err := clientcmd.DefaultClientConfig.ClientConfig()
+			if err != nil {
+				logger.Error(err, "Failed to get rest config for creating kubeconfig secret")
+			} else {
+				// Generate kubeconfig content
+				kubeconfigContent := generateKubeconfigContent(restConfig)
+
+				newSecret := &corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      kubeconfigSecretName,
+						Namespace: byoCluster.Namespace,
+						OwnerReferences: []metav1.OwnerReference{
+							{
+								APIVersion:         clusterv1.GroupVersion.String(),
+								Kind:               "Cluster",
+								Name:               cluster.Name,
+								UID:                cluster.UID,
+								BlockOwnerDeletion: func(b bool) *bool { return &b }(true),
+								Controller:         func(b bool) *bool { return &b }(true),
+							},
+						},
+					},
+					Type: corev1.SecretTypeOpaque,
+					Data: map[string][]byte{
+						"value":      []byte(kubeconfigContent),
+						"kubeconfig": []byte(kubeconfigContent),
+					},
+				}
+
+				if err := r.Client.Create(ctx, newSecret); err != nil {
+					logger.Error(err, "Failed to create kubeconfig secret")
+				} else {
+					logger.Info("Successfully created kubeconfig secret", "secret", kubeconfigSecretName)
+				}
+			}
+		} else {
+			logger.Error(err, "Failed to get kubeconfig secret")
+		}
+	}
+
 	// NOTE: Infrastructure Provider should ONLY set InfrastructureReady.
 	// ControlPlaneReady is the responsibility of the Control Plane Provider.
 	// For external/unmanaged clusters, users should manually set ControlPlaneReady
@@ -192,6 +251,33 @@ func (r ByoClusterReconciler) reconcileNormal(ctx context.Context, byoCluster *i
 		"byoClusterReady", byoCluster.Status.Ready)
 
 	return reconcile.Result{}, nil
+}
+
+// generateKubeconfigContent creates a kubeconfig file content from the rest config
+func generateKubeconfigContent(restConfig *rest.Config) string {
+	var caData string
+	if len(restConfig.CAData) > 0 {
+		caData = base64.StdEncoding.EncodeToString(restConfig.CAData)
+	}
+
+	return fmt.Sprintf(`apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    certificate-authority-data: %s
+    server: %s
+  name: bootstrap
+contexts:
+- context:
+    cluster: bootstrap
+    user: bootstrap
+  name: bootstrap
+current-context: bootstrap
+users:
+- name: bootstrap
+  user:
+    token: %s
+`, caData, restConfig.Host, restConfig.BearerToken)
 }
 
 // SetupWithManager sets up the controller with the Manager.
