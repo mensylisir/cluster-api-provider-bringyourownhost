@@ -86,6 +86,52 @@ spec:
                     spec:
                       description: Spec is the specification of the desired behavior of the machine.
                       properties:
+                        bootstrapConfigRef:
+                          description: |-
+                            BootstrapConfigRef is an optional reference to a bootstrap-specific resource
+                            that holds the bootstrap configuration (e.g., BootstrapKubeconfig for TLS Bootstrap mode).
+                            If not specified, the controller will generate the bootstrap configuration automatically.
+                          properties:
+                            apiVersion:
+                              description: API version of the referent.
+                              type: string
+                            fieldPath:
+                              description: |-
+                                If referring to a piece of an object instead of an entire object, this string
+                                should contain a valid JSON/Go field access statement, such as desiredState.manifest.containers[2].
+                                For example, if the object reference is to a container within a pod, this would take on a value like:
+                                "spec.containers{name}" (where "name" refers to the name of the container that triggered
+                                the event) or if no container name is specified "spec.containers[2]" (container with
+                                index 2 in this pod). This syntax is chosen only to have some well-defined way of
+                                referencing a part of an object.
+                              type: string
+                            kind:
+                              description: |-
+                                Kind of the referent.
+                                More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+                              type: string
+                            name:
+                              description: |-
+                                Name of the referent.
+                                More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                              type: string
+                            namespace:
+                              description: |-
+                                Namespace of the referent.
+                                More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/
+                              type: string
+                            resourceVersion:
+                              description: |-
+                                Specific resourceVersion to which this reference is made, if any.
+                                More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#concurrency-control-and-consistency
+                              type: string
+                            uid:
+                              description: |-
+                                UID of the referent.
+                                More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#uids
+                              type: string
+                          type: object
+                          x-kubernetes-map-type: atomic
                         capacityRequirements:
                           additionalProperties:
                             anyOf:
@@ -226,6 +272,30 @@ spec:
               type: object
             status:
               description: ByoMachineTemplateStatus defines the observed state of ByoMachineTemplate
+              properties:
+                capacity:
+                  additionalProperties:
+                    anyOf:
+                      - type: integer
+                      - type: string
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                  description: |-
+                    Capacity defines the resource capacity for this machine template.
+                    This value is used for autoscaling from zero operations as defined in:
+                    https://github.com/kubernetes-sigs/cluster-api/blob/main/docs/proposals/20210310-opt-in-autoscaling-from-zero.md
+                  type: object
+                nodeInfo:
+                  description: NodeInfo contains information about the node's architecture and OS.
+                  minProperties: 1
+                  properties:
+                    architecture:
+                      description: Architecture is the CPU architecture of the node (e.g., amd64, arm64).
+                      type: string
+                    operatingSystem:
+                      description: OperatingSystem is the operating system of the node (e.g., linux, windows).
+                      type: string
+                  type: object
               type: object
           type: object
       served: true
