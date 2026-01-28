@@ -939,27 +939,43 @@ func (r *ByoMachineReconciler) createBootstrapSecretTLSBootstrap(ctx context.Con
 	var caData []byte
 	var bootstrapKubeconfigData []byte
 
-	// Method 1: Try to get from BootstrapKubeconfig if it exists
-	bootstrapKubeconfigList := &infrav1.BootstrapKubeconfigList{}
-	if err := r.Client.List(ctx, bootstrapKubeconfigList, client.InNamespace(machineScope.ByoMachine.Namespace)); err != nil {
-		logger.Error(err, "failed to list BootstrapKubeconfig objects")
-	} else {
-		for _, bkc := range bootstrapKubeconfigList.Items {
-			if bkc.Status.BootstrapKubeconfigData != nil && len(*bkc.Status.BootstrapKubeconfigData) > 0 {
-				// Extract CA and kubeconfig from the bootstrap kubeconfig
-				bootstrapKubeconfigData = []byte(*bkc.Status.BootstrapKubeconfigData)
+	// Method 1: Check if ByoMachineSpec.BootstrapConfigRef is specified
+	if machineScope.ByoMachine.Spec.BootstrapConfigRef != nil {
+		bkc := &infrav1.BootstrapKubeconfig{}
+		if err := r.Client.Get(ctx, client.ObjectKey{
+			Namespace: machineScope.ByoMachine.Spec.BootstrapConfigRef.Namespace,
+			Name:      machineScope.ByoMachine.Spec.BootstrapConfigRef.Name,
+		}, bkc); err != nil {
+			logger.Error(err, "failed to get BootstrapKubeconfig from spec.bootstrapConfigRef")
+		} else if bkc.Status.BootstrapKubeconfigData != nil && len(*bkc.Status.BootstrapKubeconfigData) > 0 {
+			bootstrapKubeconfigData = []byte(*bkc.Status.BootstrapKubeconfigData)
+			if caData == nil {
+				caData = extractCAFromKubeconfig(bootstrapKubeconfigData)
+			}
+			logger.Info("Found BootstrapKubeconfig from spec.bootstrapConfigRef", "name", bkc.Name)
+		}
+	}
 
-				// Try to extract CA from the kubeconfig
-				if caData == nil {
-					caData = extractCAFromKubeconfig(bootstrapKubeconfigData)
+	// Method 2: If still no data, try to get from BootstrapKubeconfig list (for backward compatibility)
+	if len(bootstrapKubeconfigData) == 0 {
+		bootstrapKubeconfigList := &infrav1.BootstrapKubeconfigList{}
+		if err := r.Client.List(ctx, bootstrapKubeconfigList, client.InNamespace(machineScope.ByoMachine.Namespace)); err != nil {
+			logger.Error(err, "failed to list BootstrapKubeconfig objects")
+		} else {
+			for _, bkc := range bootstrapKubeconfigList.Items {
+				if bkc.Status.BootstrapKubeconfigData != nil && len(*bkc.Status.BootstrapKubeconfigData) > 0 {
+					bootstrapKubeconfigData = []byte(*bkc.Status.BootstrapKubeconfigData)
+					if caData == nil {
+						caData = extractCAFromKubeconfig(bootstrapKubeconfigData)
+					}
+					logger.Info("Found BootstrapKubeconfig with data", "name", bkc.Name)
+					break
 				}
-				logger.Info("Found BootstrapKubeconfig with data", "name", bkc.Name)
-				break
 			}
 		}
 	}
 
-	// Method 2: If still no data, try to get from the existing bootstrap secret
+	// Method 3: If still no data, try to get from the existing bootstrap secret
 	if len(bootstrapKubeconfigData) == 0 && machineScope.Machine.Spec.Bootstrap.DataSecretName != nil {
 		bootstrapSecret := &corev1.Secret{}
 		if err := r.Client.Get(ctx, client.ObjectKey{

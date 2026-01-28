@@ -64,6 +64,12 @@ type ByoMachineSpec struct {
 	// +optional
 	InstallerRef *corev1.ObjectReference `json:"installerRef,omitempty"`
 
+	// BootstrapConfigRef is an optional reference to a bootstrap-specific resource
+	// that holds the bootstrap configuration (e.g., BootstrapKubeconfig for TLS Bootstrap mode).
+	// If not specified, the controller will generate the bootstrap configuration automatically.
+	// +optional
+	BootstrapConfigRef *corev1.ObjectReference `json:"bootstrapConfigRef,omitempty"`
+
 	// JoinMode defines how the node joins the cluster.
 	// - kubeadm: Use kubeadm join command (default)
 	// - tlsBootstrap: Use TLS Bootstrapping mechanism
