@@ -186,16 +186,19 @@ var _ webhook.Validator = &BootstrapKubeconfig{}
 func (r *BootstrapKubeconfig) ValidateCreate() error {
 	bootstrapkubeconfiglog.Info("validate create", "name", r.Name)
 
-	// Skip APIServer validation if it's empty - mutating webhook will populate it
+	// Skip APIServer validation if it's empty - controller will populate it
 	if r.Spec.APIServer != "" {
 		if err := r.validateAPIServer(); err != nil {
 			return err
 		}
 	}
 
-	if err := r.validateCAData(); err != nil {
-		return err
-	}
+	// Skip CertificateAuthorityData validation - controller will populate it from original
+	// if r.Spec.CertificateAuthorityData != "" {
+	// 	if err := r.validateCAData(); err != nil {
+	// 		return err
+	// 	}
+	// }
 
 	return nil
 }
@@ -204,16 +207,19 @@ func (r *BootstrapKubeconfig) ValidateCreate() error {
 func (r *BootstrapKubeconfig) ValidateUpdate(old runtime.Object) error {
 	bootstrapkubeconfiglog.Info("validate update", "name", r.Name)
 
-	// Skip APIServer validation if it's empty - mutating webhook will populate it
+	// Skip APIServer validation if it's empty - controller will populate it
 	if r.Spec.APIServer != "" {
 		if err := r.validateAPIServer(); err != nil {
 			return err
 		}
 	}
 
-	if err := r.validateCAData(); err != nil {
-		return err
-	}
+	// Skip CertificateAuthorityData validation - controller will populate it from original
+	// if r.Spec.CertificateAuthorityData != "" {
+	// 	if err := r.validateCAData(); err != nil {
+	// 		return err
+	// 	}
+	// }
 
 	return nil
 }
