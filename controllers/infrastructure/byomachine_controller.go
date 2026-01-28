@@ -38,6 +38,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
+	bootstraputil "k8s.io/cluster-bootstrap/token/util"
 	"github.com/go-logr/logr"
 	infrav1 "github.com/mensylisir/cluster-api-provider-bringyourownhost/apis/infrastructure/v1beta1"
 	"github.com/mensylisir/cluster-api-provider-bringyourownhost/common"
@@ -1026,10 +1027,10 @@ func (r *ByoMachineReconciler) createBootstrapSecretTLSBootstrap(ctx context.Con
 		// Get the in-cluster config to create a bootstrap kubeconfig
 		restConfig, err := clientcmd.DefaultClientConfig.ClientConfig()
 		if err == nil {
-			// Create a bootstrap kubeconfig using the controller's credentials
-			bootstrapKubeconfigContent, err := generateBootstrapKubeconfig(restConfig)
+			// Create a bootstrap kubeconfig using a newly generated bootstrap token
+			bootstrapKubeconfigContent, tokenStr, err := generateBootstrapKubeconfig(ctx, restConfig, r.Client)
 			if err == nil {
-				logger.Info("Generated bootstrap kubeconfig from local cluster")
+				logger.Info("Generated bootstrap kubeconfig with new bootstrap token")
 				bootstrapKubeconfigData = []byte(bootstrapKubeconfigContent)
 
 				// Extract CA from the generated kubeconfig
@@ -1341,9 +1342,29 @@ portRange: ""
 }
 
 // generateBootstrapKubeconfig creates a kubeconfig for TLS bootstrap
-// using the provided rest config to connect to the cluster
-func generateBootstrapKubeconfig(restConfig *rest.Config) (string, error) {
-	// Create a simple kubeconfig YAML structure
+// using a newly generated bootstrap token instead of the controller's bearer token
+func generateBootstrapKubeconfig(ctx context.Context, restConfig *rest.Config, client client.Client) (string, string, error) {
+	// Generate a new bootstrap token
+	tokenStr, err := bootstraputil.GenerateBootstrapToken()
+	if err != nil {
+		return "", "", fmt.Errorf("failed to generate bootstrap token: %w", err)
+	}
+
+	// Create bootstrap token secret
+	ttl := time.Minute * 30
+	tokenSecret, err := bootstraptoken.GenerateSecretFromBootstrapToken(tokenStr, ttl)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to create token secret: %w", err)
+	}
+
+	// Create the secret in the cluster
+	if err := client.Create(ctx, tokenSecret); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return "", "", fmt.Errorf("failed to create token secret: %w", err)
+		}
+	}
+
+	// Create a simple kubeconfig YAML structure with the new bootstrap token
 	var caData string
 	if len(restConfig.CAData) > 0 {
 		caData = base64.StdEncoding.EncodeToString(restConfig.CAData)
@@ -1366,9 +1387,9 @@ users:
 - name: bootstrap
   user:
     token: %s
-`, caData, restConfig.Host, restConfig.BearerToken)
+`, caData, restConfig.Host, tokenStr)
 
-	return kubeconfigYAML, nil
+	return kubeconfigYAML, tokenStr, nil
 }
 
 // extractCAFromKubeconfig extracts CA data from a kubeconfig file
