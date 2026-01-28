@@ -723,22 +723,26 @@ func (r *HostReconciler) bootstrapK8sNodeTLS(ctx context.Context, byoHost *infra
 
 	// Write kube-proxy configuration if provided and ManageKubeProxy is true
 	if byoHost.Spec.ManageKubeProxy {
-		// Write kube-proxy-config.yaml (required by kube-proxy service)
-		if kubeProxyConfigYAML, ok := secret.Data["kube-proxy-config.yaml"]; ok {
-			kubeProxyConfigPath := "/etc/kubernetes/kube-proxy-config.yaml"
-			// Create parent directory if it doesn't exist
-			if err := r.FileWriter.MkdirIfNotExists("/etc/kubernetes"); err != nil {
-				return fmt.Errorf("failed to create /etc/kubernetes directory: %w", err)
-			}
-			if err := r.FileWriter.WriteToFile(&cloudinit.Files{
-				Path:        kubeProxyConfigPath,
-				Content:     string(kubeProxyConfigYAML),
-				Permissions: "0644",
-			}); err != nil {
-				return fmt.Errorf("failed to write kube-proxy config: %w", err)
-			}
-			logger.Info("Wrote kube-proxy config", "path", kubeProxyConfigPath)
+		kubeProxyConfigPath := "/etc/kubernetes/kube-proxy-config.yaml"
+		kubeProxyConfigYAML, hasConfig := secret.Data["kube-proxy-config.yaml"]
+		if !hasConfig {
+			// Generate default kube-proxy config if not provided
+			// For binary-deployed clusters without ConfigMaps, generate a minimal working config
+			logger.Info("No kube-proxy-config.yaml found in bootstrap secret, generating default config")
+			kubeProxyConfigYAML = []byte(generateDefaultKubeProxyConfig())
 		}
+		// Create parent directory if it doesn't exist
+		if err := r.FileWriter.MkdirIfNotExists("/etc/kubernetes"); err != nil {
+			return fmt.Errorf("failed to create /etc/kubernetes directory: %w", err)
+		}
+		if err := r.FileWriter.WriteToFile(&cloudinit.Files{
+			Path:        kubeProxyConfigPath,
+			Content:     string(kubeProxyConfigYAML),
+			Permissions: "0644",
+		}); err != nil {
+			return fmt.Errorf("failed to write kube-proxy config: %w", err)
+		}
+		logger.Info("Wrote kube-proxy config", "path", kubeProxyConfigPath)
 
 		// Write kube-proxy.kubeconfig (required for authentication)
 		if kubeProxyConfig, ok := secret.Data["kube-proxy.kubeconfig"]; ok {
@@ -1024,4 +1028,49 @@ func (r *HostReconciler) preflightChecks(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// generateDefaultKubeProxyConfig generates a default KubeProxyConfiguration
+// For binary-deployed clusters without ConfigMaps, generate a minimal working config
+func generateDefaultKubeProxyConfig() string {
+	return fmt.Sprintf(`apiVersion: kubeproxy.config.k8s.io/v1alpha1
+kind: KubeProxyConfiguration
+bindAddress: 0.0.0.0
+clientConnection:
+  acceptContentTypes: ""
+  burst: 10
+  contentType: application/vnd.kubernetes.protobuf
+  kubeconfig: /var/lib/kube-proxy/kubeconfig.conf
+  qps: 5
+clusterCIDR: ""
+configSyncPeriod: 15m0s
+conntrack:
+  maxPerCore: 32768
+  min: 131072
+  tcpCloseWaitTimeout: 1h0m0s
+  tcpEstablishedTimeout: 24h0m0s
+enableProfiling: false
+healthzBindAddress: 0.0.0.0:10256
+hostnameOverride: ""
+iptables:
+  masqueradeAll: false
+  masqueradeBit: 14
+  minSyncPeriod: 0s
+  syncPeriod: 30s
+ipvs:
+  excludeCIDRs: null
+  minSyncPeriod: 0s
+  scheduler: ""
+  strictARP: false
+  syncPeriod: 30s
+  tcpFinTimeout: 0s
+  tcpTimeout: 0s
+  udpTimeout: 0s
+metricsBindAddress: 127.0.0.1:10249
+mode: ""
+nodePortAddresses: null
+oomScoreAdj: -999
+portRange: ""
+clusterDomain: "cluster.local"
+`)
 }

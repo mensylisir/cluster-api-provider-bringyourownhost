@@ -761,7 +761,10 @@ func (r *ByoMachineReconciler) attachByoHost(ctx context.Context, machineScope *
 			latestHost.Annotations = make(map[string]string)
 		}
 		latestHost.Annotations[infrav1.EndPointIPAnnotation] = machineScope.Cluster.Spec.ControlPlaneEndpoint.Host
-		latestHost.Annotations[infrav1.K8sVersionAnnotation] = strings.Split(*machineScope.Machine.Spec.Version, "+")[0]
+		// Safely extract Kubernetes version, handling nil Machine.Spec.Version
+		if machineScope.Machine.Spec.Version != nil {
+			latestHost.Annotations[infrav1.K8sVersionAnnotation] = strings.Split(*machineScope.Machine.Spec.Version, "+")[0]
+		}
 		latestHost.Annotations[infrav1.BundleLookupBaseRegistryAnnotation] = machineScope.ByoCluster.Spec.BundleLookupBaseRegistry
 
 		err = byohostHelper.Patch(ctx, latestHost)
