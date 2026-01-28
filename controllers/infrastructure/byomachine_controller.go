@@ -1025,21 +1025,29 @@ func (r *ByoMachineReconciler) createBootstrapSecretTLSBootstrap(ctx context.Con
 	}
 
 	// Method 2: If still no data, try to get from BootstrapKubeconfig list (for backward compatibility)
+	// BUT only for non-TLS-Bootstrap mode or if explicitly required.
+	// For TLS Bootstrap mode, we ALWAYS generate a new bootstrap token to ensure fresh credentials.
 	if len(bootstrapKubeconfigData) == 0 {
-		bootstrapKubeconfigList := &infrav1.BootstrapKubeconfigList{}
-		if err := r.Client.List(ctx, bootstrapKubeconfigList, client.InNamespace(machineScope.ByoMachine.Namespace)); err != nil {
-			logger.Error(err, "failed to list BootstrapKubeconfig objects")
-		} else {
-			for _, bkc := range bootstrapKubeconfigList.Items {
-				if bkc.Status.BootstrapKubeconfigData != nil && len(*bkc.Status.BootstrapKubeconfigData) > 0 {
-					bootstrapKubeconfigData = []byte(*bkc.Status.BootstrapKubeconfigData)
-					if caData == nil {
-						caData = extractCAFromKubeconfig(bootstrapKubeconfigData)
+		// Skip finding existing BootstrapKubeconfig for TLS Bootstrap mode
+		// Always generate a new token for security and to avoid stale token issues
+		if machineScope.ByoMachine.Spec.JoinMode != infrav1.JoinModeTLSBootstrap {
+			bootstrapKubeconfigList := &infrav1.BootstrapKubeconfigList{}
+			if err := r.Client.List(ctx, bootstrapKubeconfigList, client.InNamespace(machineScope.ByoMachine.Namespace)); err != nil {
+				logger.Error(err, "failed to list BootstrapKubeconfig objects")
+			} else {
+				for _, bkc := range bootstrapKubeconfigList.Items {
+					if bkc.Status.BootstrapKubeconfigData != nil && len(*bkc.Status.BootstrapKubeconfigData) > 0 {
+						bootstrapKubeconfigData = []byte(*bkc.Status.BootstrapKubeconfigData)
+						if caData == nil {
+							caData = extractCAFromKubeconfig(bootstrapKubeconfigData)
+						}
+						logger.Info("Found BootstrapKubeconfig with data", "name", bkc.Name)
+						break
 					}
-					logger.Info("Found BootstrapKubeconfig with data", "name", bkc.Name)
-					break
 				}
 			}
+		} else {
+			logger.V(4).Info("Skipping existing BootstrapKubeconfig for TLS Bootstrap mode, will generate new token")
 		}
 	}
 
