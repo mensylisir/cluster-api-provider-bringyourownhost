@@ -790,6 +790,7 @@ func (r *HostReconciler) bootstrapK8sNodeTLS(ctx context.Context, byoHost *infra
 		"--bootstrap-kubeconfig=/etc/kubernetes/bootstrap-kubeconfig",
 		"--kubeconfig=/etc/kubernetes/kubelet.conf",
 		"--cert-dir=/var/lib/kubelet/pki",
+		"--config=/var/lib/kubelet/config.yaml",
 		"--rotate-certificates=true",
 		"--rotate-server-certificates=true",
 		"--pod-manifest-path=/etc/kubernetes/manifests",
