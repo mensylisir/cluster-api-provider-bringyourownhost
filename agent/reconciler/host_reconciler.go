@@ -217,6 +217,14 @@ func (r *HostReconciler) reconcileNormal(ctx context.Context, byoHost *infrastru
 				logger.Error(err, "failed to persist machine ID")
 			}
 		}
+
+		// For TLS Bootstrap mode, check if kube-proxy needs to be started
+		// This handles the case where ManageKubeProxy is set to true after bootstrap
+		if byoHost.Spec.JoinMode == infrastructurev1beta1.JoinModeTLSBootstrap && byoHost.Spec.ManageKubeProxy {
+			if err := r.startKubeProxyIfNeeded(ctx, byoHost); err != nil {
+				logger.Error(err, "failed to start kube-proxy")
+			}
+		}
 	}
 
 	return ctrl.Result{}, nil
@@ -804,6 +812,20 @@ func (r *HostReconciler) bootstrapK8sNodeTLS(ctx context.Context, byoHost *infra
 		kubeletArgs = append(kubeletArgs, fmt.Sprintf("--cluster-dns=%s", endpointIP))
 	}
 
+	// Create critical directories for kubelet
+	// These must exist before kubelet starts to avoid errors
+	criticalDirs := []string{
+		"/etc/kubernetes/manifests",     // For static pod manifests
+		"/var/lib/kubelet/pki",          // For kubelet certificates
+		"/var/lib/kube-proxy",           // For kube-proxy state
+	}
+	for _, dir := range criticalDirs {
+		if err := r.FileWriter.MkdirIfNotExists(dir); err != nil {
+			return fmt.Errorf("failed to create directory %s: %w", dir, err)
+		}
+		logger.V(4).Info("Created directory", "path", dir)
+	}
+
 	// Create and start kubelet systemd service
 	kubeletServiceContent := fmt.Sprintf(`[Unit]
 Description=kubelet: The Kubernetes Node Agent
@@ -1072,5 +1094,79 @@ nodePortAddresses: null
 oomScoreAdj: -999
 portRange: ""
 clusterDomain: "cluster.local"
-`)
+ `)
+}
+
+// startKubeProxyIfNeeded starts kube-proxy if ManageKubeProxy is true and kube-proxy is not already running.
+// This handles the case where ManageKubeProxy is set to true after bootstrap.
+func (r *HostReconciler) startKubeProxyIfNeeded(ctx context.Context, byoHost *infrastructurev1beta1.ByoHost) error {
+	logger := ctrl.LoggerFrom(ctx)
+
+	// Check if ManageKubeProxy is enabled
+	if !byoHost.Spec.ManageKubeProxy {
+		logger.V(4).Info("ManageKubeProxy is false, skipping kube-proxy start")
+		return nil
+	}
+
+	// Check if kube-proxy is already running
+	if err := r.CmdRunner.RunCmd(ctx, "systemctl is-active --quiet kube-proxy"); err == nil {
+		logger.Info("kube-proxy is already running")
+		return nil
+	}
+
+	logger.Info("ManageKubeProxy is true but kube-proxy is not running, starting kube-proxy")
+
+	// Generate default kube-proxy config if it doesn't exist
+	kubeProxyConfigPath := "/etc/kubernetes/kube-proxy-config.yaml"
+	if _, err := os.Stat(kubeProxyConfigPath); os.IsNotExist(err) {
+		logger.Info("kube-proxy config not found, generating default config")
+		if err := r.FileWriter.MkdirIfNotExists("/etc/kubernetes"); err != nil {
+			return fmt.Errorf("failed to create /etc/kubernetes directory: %w", err)
+		}
+		if err := r.FileWriter.WriteToFile(&cloudinit.Files{
+			Path:        kubeProxyConfigPath,
+			Content:     generateDefaultKubeProxyConfig(),
+			Permissions: "0644",
+		}); err != nil {
+			return fmt.Errorf("failed to write kube-proxy config: %w", err)
+		}
+		logger.Info("Generated default kube-proxy config", "path", kubeProxyConfigPath)
+	}
+
+	// Write kube-proxy service file
+	kubeProxyServiceContent := `[Unit]
+Description=kube-proxy: The Kubernetes Network Proxy
+Documentation=https://kubernetes.io/docs/home/
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/kube-proxy --config=/etc/kubernetes/kube-proxy-config.yaml
+Restart=always
+StartLimitInterval=0
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+`
+	if err := r.FileWriter.WriteToFile(&cloudinit.Files{
+		Path:        "/etc/systemd/system/kube-proxy.service",
+		Content:     kubeProxyServiceContent,
+		Permissions: "0644",
+	}); err != nil {
+		return fmt.Errorf("failed to write kube-proxy service: %w", err)
+	}
+	logger.Info("Wrote kube-proxy service file")
+
+	// Reload systemd and start kube-proxy
+	if err := r.CmdRunner.RunCmd(ctx, "systemctl daemon-reload"); err != nil {
+		return fmt.Errorf("failed to reload systemd for kube-proxy: %w", err)
+	}
+
+	if err := r.CmdRunner.RunCmd(ctx, "systemctl enable --now kube-proxy"); err != nil {
+		return fmt.Errorf("failed to enable/start kube-proxy: %w", err)
+	}
+
+	logger.Info("Successfully started kube-proxy service")
+	return nil
 }
