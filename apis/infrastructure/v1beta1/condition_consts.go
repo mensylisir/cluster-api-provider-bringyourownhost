@@ -69,6 +69,10 @@ const (
 	// This secret is available on Machine.Spec.Bootstrap.DataSecretName
 	WaitingForBootstrapDataSecretReason = "WaitingForBootstrapDataSecret"
 
+	// WaitingForNodeRefReason indicates that the ByoMachine is waiting for the node to be registered
+	// and a NodeRef to be assigned
+	WaitingForNodeRefReason = "WaitingForNodeRef"
+
 	// BYOHostsUnavailableReason indicates that no byohosts are available in the capacity pool
 	BYOHostsUnavailableReason = "BYOHostsUnavailable"
 
