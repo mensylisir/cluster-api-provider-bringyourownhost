@@ -6,14 +6,17 @@ package controllers
 import (
 	"context"
 	b64 "encoding/base64"
+	"fmt"
 	"time"
 
 	infrastructurev1beta1 "github.com/mensylisir/cluster-api-provider-bringyourownhost/apis/infrastructure/v1beta1"
 	"github.com/mensylisir/cluster-api-provider-bringyourownhost/common/bootstraptoken"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	clientcmdlatest "k8s.io/client-go/tools/clientcmd/api/latest"
 	bootstraputil "k8s.io/cluster-bootstrap/token/util"
+	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	"sigs.k8s.io/cluster-api/util/patch"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -39,7 +42,7 @@ const (
 // move the current state of the cluster closer to the desired state.
 func (r *BootstrapKubeconfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
-	logger.Info("Reconcile request received")
+	logger.Info("Reconcile request received", "name", req.Name)
 
 	// Fetch the BootstrapKubeconfig instance
 	bootstrapKubeconfig := &infrastructurev1beta1.BootstrapKubeconfig{}
@@ -49,6 +52,15 @@ func (r *BootstrapKubeconfigReconciler) Reconcile(ctx context.Context, req ctrl.
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
+	}
+
+	// If APIServer or CertificateAuthorityData is empty, populate from the original BootstrapKubeconfig
+	// This handles the case where MachineSet clones the BootstrapKubeconfig
+	if bootstrapKubeconfig.Spec.APIServer == "" || bootstrapKubeconfig.Spec.CertificateAuthorityData == "" {
+		if err := r.populateFromOriginal(ctx, bootstrapKubeconfig); err != nil {
+			logger.Error(err, "failed to populate from original BootstrapKubeconfig", "name", req.Name)
+			// Continue anyway - the fields might be populated later
+		}
 	}
 
 	// There already is bootstrap-kubeconfig data associated with this object
@@ -99,6 +111,62 @@ func (r *BootstrapKubeconfigReconciler) Reconcile(ctx context.Context, req ctrl.
 	bootstrapKubeconfig.Status.BootstrapKubeconfigData = &bootstrapKubeconfigDataStr
 
 	return ctrl.Result{}, helper.Patch(ctx, bootstrapKubeconfig)
+}
+
+// populateFromOriginal populates APIServer and CertificateAuthorityData from the original BootstrapKubeconfig
+func (r *BootstrapKubeconfigReconciler) populateFromOriginal(ctx context.Context, bk *infrastructurev1beta1.BootstrapKubeconfig) error {
+	// Find the Machine owner
+	var machineName string
+	for _, ref := range bk.GetOwnerReferences() {
+		if ref.Kind == "Machine" {
+			machineName = ref.Name
+			break
+		}
+	}
+
+	if machineName == "" {
+		return fmt.Errorf("no Machine owner found")
+	}
+
+	// Look up the Machine
+	machine := &clusterv1.Machine{}
+	if err := r.Client.Get(ctx, types.NamespacedName{
+		Name:      machineName,
+		Namespace: bk.GetNamespace(),
+	}, machine); err != nil {
+		return fmt.Errorf("failed to get Machine %s: %w", machineName, err)
+	}
+
+	// Get the original BootstrapKubeconfig from Machine's bootstrap config ref
+	if machine.Spec.Bootstrap.ConfigRef == nil {
+		return fmt.Errorf("Machine %s has no bootstrap config ref", machineName)
+	}
+
+	originalBK := &infrastructurev1beta1.BootstrapKubeconfig{}
+	if err := r.Client.Get(ctx, types.NamespacedName{
+		Name:      machine.Spec.Bootstrap.ConfigRef.Name,
+		Namespace: bk.GetNamespace(),
+	}, originalBK); err != nil {
+		return fmt.Errorf("failed to get original BootstrapKubeconfig %s: %w", machine.Spec.Bootstrap.ConfigRef.Name, err)
+	}
+
+	// Patch the BootstrapKubeconfig with values from the original
+	helper, err := patch.NewHelper(bk, r.Client)
+	if err != nil {
+		return fmt.Errorf("failed to create patch helper: %w", err)
+	}
+
+	if bk.Spec.APIServer == "" && originalBK.Spec.APIServer != "" {
+		bk.Spec.APIServer = originalBK.Spec.APIServer
+		log.FromContext(ctx).Info("populated APIServer from original BootstrapKubeconfig", "original", originalBK.Name)
+	}
+
+	if bk.Spec.CertificateAuthorityData == "" && originalBK.Spec.CertificateAuthorityData != "" {
+		bk.Spec.CertificateAuthorityData = originalBK.Spec.CertificateAuthorityData
+		log.FromContext(ctx).Info("populated CertificateAuthorityData from original BootstrapKubeconfig", "original", originalBK.Name)
+	}
+
+	return helper.Patch(ctx, bk)
 }
 
 // SetupWithManager sets up the controller with the Manager.
