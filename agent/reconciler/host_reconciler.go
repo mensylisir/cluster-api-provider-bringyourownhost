@@ -597,10 +597,23 @@ func (r *HostReconciler) resetNode(ctx context.Context, byoHost *infrastructurev
 		}
 	}
 
-	logger.Info("Kubernetes Node reset completed")
-	r.Recorder.Event(byoHost, corev1.EventTypeNormal, "ResetK8sNodeSucceeded", "k8s Node Reset completed")
-	return nil
-}
+		logger.Info("Kubernetes Node reset completed")
+
+		node := &corev1.Node{}
+		if err := r.Client.Get(ctx, types.NamespacedName{Name: byoHost.Name}, node); err != nil {
+			logger.V(4).Info("Node object not found, skipping deletion", "node", byoHost.Name)
+		} else {
+			logger.Info("Deleting Node object from API server", "node", byoHost.Name)
+			if err := r.Client.Delete(ctx, node); err != nil {
+				logger.Error(err, "Failed to delete Node object", "node", byoHost.Name)
+			} else {
+				logger.Info("Successfully deleted Node object", "node", byoHost.Name)
+			}
+		}
+
+		r.Recorder.Event(byoHost, corev1.EventTypeNormal, "ResetK8sNodeSucceeded", "k8s Node Reset completed")
+		return nil
+	}
 
 // resetNodeWithRetry attempts to reset the node with retry logic
 func (r *HostReconciler) resetNodeWithRetry(ctx context.Context, byoHost *infrastructurev1beta1.ByoHost) error {
