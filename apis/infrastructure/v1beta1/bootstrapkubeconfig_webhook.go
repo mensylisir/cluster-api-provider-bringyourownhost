@@ -4,19 +4,26 @@
 package v1beta1
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
 	b64 "encoding/base64"
 	"encoding/pem"
 	"net/url"
 
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
-	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 )
 
 // log is for logging in this package.
-var bootstrapkubeconfiglog = logf.Log.WithName("bootstrapkubeconfig-resource")
+var bootstrapkubeconfiglog = ctrl.Log.WithName("bootstrapkubeconfig-resource")
 
 // APIServerURLScheme is the url scheme for the APIServer
 const APIServerURLScheme = "https"
@@ -27,6 +34,118 @@ func (r *BootstrapKubeconfig) SetupWebhookWithManager(mgr ctrl.Manager) error {
 		Complete()
 }
 
+var _ webhook.Defaulter = &BootstrapKubeconfig{}
+
+func (r *BootstrapKubeconfig) Default() {
+	bootstrapkubeconfiglog.Info("defaulting bootstrapkubeconfig", "name", r.Name)
+}
+
+// +k8s:deepcopy-gen=false
+// BootstrapKubeconfigMutatingWebhook handles admission requests
+type BootstrapKubeconfigMutatingWebhook struct {
+	Client client.Client
+}
+
+func (wh *BootstrapKubeconfigMutatingWebhook) Handle(ctx context.Context, req admission.Request) admission.Response {
+	bootstrapkubeconfiglog.Info("mutating webhook called", "name", req.Name)
+
+	obj := &BootstrapKubeconfig{}
+	if err := json.Unmarshal(req.Object.Raw, obj); err != nil {
+		return admission.Errored(http.StatusBadRequest, err)
+	}
+
+	// Only process if APIServer is empty (cloned by MachineSet)
+	if obj.Spec.APIServer == "" {
+		if err := wh.populateAPIServerFromCluster(ctx, obj); err != nil {
+			bootstrapkubeconfiglog.Error(err, "failed to populate APIServer from cluster", "name", obj.Name)
+			// Don't fail - let the validating webhook handle the error
+		}
+	}
+
+	marshaled, err := json.Marshal(obj)
+	if err != nil {
+		return admission.Errored(http.StatusInternalServerError, err)
+	}
+
+	return admission.PatchResponseFromRaw(req.Object.Raw, marshaled)
+}
+
+func (wh *BootstrapKubeconfigMutatingWebhook) populateAPIServerFromCluster(ctx context.Context, obj *BootstrapKubeconfig) error {
+	// Find the Cluster owner in the ownerReferences
+	var clusterName types.NamespacedName
+	for _, ref := range obj.GetOwnerReferences() {
+		if ref.Kind == "Machine" {
+			// Look up the Machine to find its Cluster owner
+			machine := &clusterv1.Machine{}
+			if err := wh.Client.Get(ctx, types.NamespacedName{
+				Name:      ref.Name,
+				Namespace: obj.GetNamespace(),
+			}, machine); err != nil {
+				continue
+			}
+
+			// Check if the Machine has a Cluster owner
+			for _, machineRef := range machine.GetOwnerReferences() {
+				if machineRef.Kind == "Cluster" {
+					clusterName = types.NamespacedName{
+						Name:      machineRef.Name,
+						Namespace: obj.GetNamespace(),
+					}
+					break
+				}
+			}
+			break
+		} else if ref.Kind == "Cluster" {
+			clusterName = types.NamespacedName{
+				Name:      ref.Name,
+				Namespace: obj.GetNamespace(),
+			}
+			break
+		}
+	}
+
+	if clusterName.Name == "" {
+		return fmt.Errorf("failed to find Cluster owner reference")
+	}
+
+	// Look up the Cluster
+	cluster := &clusterv1.Cluster{}
+	if err := wh.Client.Get(ctx, clusterName, cluster); err != nil {
+		return fmt.Errorf("failed to get Cluster %s: %w", clusterName, err)
+	}
+
+	// Get the ByoCluster from the Cluster's infrastructure ref
+	if cluster.Spec.InfrastructureRef == nil {
+		return fmt.Errorf("Cluster %s does not have an infrastructure ref", clusterName)
+	}
+
+	// Look up the ByoCluster
+	byoCluster := &ByoCluster{}
+	if err := wh.Client.Get(ctx, types.NamespacedName{
+		Name:      cluster.Spec.InfrastructureRef.Name,
+		Namespace: cluster.Spec.InfrastructureRef.Namespace,
+	}, byoCluster); err != nil {
+		return fmt.Errorf("failed to get ByoCluster %s: %w", cluster.Spec.InfrastructureRef.Name, err)
+	}
+
+	// Populate the APIServer from the controlPlaneEndpoint
+	if byoCluster.Spec.ControlPlaneEndpoint.Host != "" && byoCluster.Spec.ControlPlaneEndpoint.Port != 0 {
+		obj.Spec.APIServer = fmt.Sprintf("https://%s:%d", byoCluster.Spec.ControlPlaneEndpoint.Host, byoCluster.Spec.ControlPlaneEndpoint.Port)
+		bootstrapkubeconfiglog.Info("populated APIServer from cluster", "apiserver", obj.Spec.APIServer)
+	}
+
+	return nil
+}
+
+// SetupMutatingWebhookWithManager sets up the mutating webhook with the manager
+func SetupMutatingWebhookWithManager(mgr ctrl.Manager) error {
+	mgr.GetWebhookServer().Register(
+		"/mutate-infrastructure-cluster-x-k8s-io-v1beta1-bootstrapkubeconfig",
+		&webhook.Admission{Handler: &BootstrapKubeconfigMutatingWebhook{Client: mgr.GetClient()}},
+	)
+	return nil
+}
+
 //+kubebuilder:webhook:path=/validate-infrastructure-cluster-x-k8s-io-v1beta1-bootstrapkubeconfig,mutating=false,failurePolicy=fail,sideEffects=None,groups=infrastructure.cluster.x-k8s.io,resources=bootstrapkubeconfigs,verbs=create;update,versions=v1beta1,name=vbootstrapkubeconfig.kb.io,admissionReviewVersions=v1
 
 var _ webhook.Validator = &BootstrapKubeconfig{}
@@ -35,8 +154,11 @@ var _ webhook.Validator = &BootstrapKubeconfig{}
 func (r *BootstrapKubeconfig) ValidateCreate() error {
 	bootstrapkubeconfiglog.Info("validate create", "name", r.Name)
 
-	if err := r.validateAPIServer(); err != nil {
-		return err
+	// Skip APIServer validation if it's empty - mutating webhook will populate it
+	if r.Spec.APIServer != "" {
+		if err := r.validateAPIServer(); err != nil {
+			return err
+		}
 	}
 
 	if err := r.validateCAData(); err != nil {
@@ -50,8 +172,11 @@ func (r *BootstrapKubeconfig) ValidateCreate() error {
 func (r *BootstrapKubeconfig) ValidateUpdate(old runtime.Object) error {
 	bootstrapkubeconfiglog.Info("validate update", "name", r.Name)
 
-	if err := r.validateAPIServer(); err != nil {
-		return err
+	// Skip APIServer validation if it's empty - mutating webhook will populate it
+	if r.Spec.APIServer != "" {
+		if err := r.validateAPIServer(); err != nil {
+			return err
+		}
 	}
 
 	if err := r.validateCAData(); err != nil {
