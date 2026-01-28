@@ -1427,8 +1427,8 @@ func (r *ByoMachineReconciler) createBootstrapSecretExternalKubeadm(ctx context.
 	// In a real implementation, we'd compute this from the CA certificate
 	// For now, we'll use a placeholder that the node will validate
 
-	// Create cloud-init script with kubeadm join command
-	cloudInitScript := generateKubeadmJoinCloudInit(machineScope.ByoMachine.Name, apiServerEndpoint, tokenStr, caCertData, kubeadmVersion)
+	// Create bootstrap secret with join script for host-agent
+	joinScript := generateKubeadmJoinScript(machineScope.ByoMachine.Name, apiServerEndpoint, tokenStr, caCertData, kubeadmVersion)
 
 	// Create bootstrap secret in the management cluster
 	bootstrapSecretName := machineScope.ByoMachine.Name + "-kubeadm-bootstrap"
@@ -1449,7 +1449,7 @@ func (r *ByoMachineReconciler) createBootstrapSecretExternalKubeadm(ctx context.
 		},
 		Type: corev1.SecretTypeOpaque,
 		Data: map[string][]byte{
-			"value": []byte(cloudInitScript),
+			"value": []byte(joinScript),
 		},
 	}
 
@@ -1461,16 +1461,16 @@ func (r *ByoMachineReconciler) createBootstrapSecretExternalKubeadm(ctx context.
 	return bootstrapSecretName, nil
 }
 
-// generateKubeadmJoinCloudInit generates a cloud-init script for kubeadm join
-func generateKubeadmJoinCloudInit(hostname, apiServerEndpoint, token, caCertData, kubeadmVersion string) string {
-	// This is a simplified cloud-init script for kubeadm join
-	// In production, this would include more error handling and configuration
+// generateKubeadmJoinScript generates a shell script for host-agent to execute kubeadm join
+func generateKubeadmJoinScript(hostname, apiServerEndpoint, token, caCertData, kubeadmVersion string) string {
+	// Generate YAML format for host-agent's cloudinit executor
+	// Contains write_files and runCmd sections
 
-	var writeFiles strings.Builder
+	var script strings.Builder
 
 	// Write hostname file
-	writeFiles.WriteString(fmt.Sprintf(`
-- path: /etc/hostname
+	script.WriteString("write_files:\n")
+	script.WriteString(fmt.Sprintf(`- path: /etc/hostname
   content: |
     %s
   permissions: "0644"
@@ -1478,47 +1478,39 @@ func generateKubeadmJoinCloudInit(hostname, apiServerEndpoint, token, caCertData
 
 	// If CA cert data is provided, write it
 	if caCertData != "" {
-		writeFiles.WriteString(fmt.Sprintf(`
-- path: /etc/kubernetes/pki/ca.crt
+		// Decode base64 CA data
+		caContent, _ := base64.StdEncoding.DecodeString(caCertData)
+		script.WriteString(fmt.Sprintf(`- path: /etc/kubernetes/pki/ca.crt
   content: |
     %s
   permissions: "0644"
-`, caCertData))
+`, strings.ReplaceAll(string(caContent), "\n", "\n    ")))
 	}
 
-	// Generate the cloud-init script
-	script := fmt.Sprintf(`#cloud-config
-write_files:
-%s
-runcmd:
-  - "hostnamectl set-hostname %s"
-  - "systemctl restart systemd-hostnamed"
-  - "mkdir -p /etc/kubernetes/pki"
-`, writeFiles.String(), hostname)
+	// Add run commands
+	script.WriteString("runCmd:\n")
+
+	// Set hostname
+	script.WriteString(fmt.Sprintf(`- hostnamectl set-hostname %s
+`, hostname))
+
+	// Ensure directories exist
+	script.WriteString(`- mkdir -p /etc/kubernetes/pki
+`)
 
 	// Add kubeadm join command if we have the necessary information
 	if apiServerEndpoint != "" && token != "" {
-		script += fmt.Sprintf(`  - |
-    # Wait for kubelet to be installed
-    while ! command -v kubeadm &> /dev/null; do
-      echo "kubeadm not found, waiting..."
-      sleep 5
-    done
-    echo "kubeadm found, proceeding with join"
-
-    # Generate discovery-token-ca-cert-hash
-    # This is a simplified approach - in production, you'd compute the hash properly
-    CA_HASH=$(openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt 2>/dev/null | openssl pkey -pubin -outform der 2>/dev/null | openssl dgst -sha256 -raw | sed 's/^.* //')
-
-    # Perform kubeadm join
-    kubeadm join %s \\
-      --token %s \\
-      --discovery-token-ca-cert-hash sha256:$CA_HASH \\
-      --ignore-preflight-errors=Swap
-`, apiServerEndpoint, token)
+		script.WriteString(`# Compute CA certificate hash and perform kubeadm join
+- |
+  CA_HASH=$(openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt 2>/dev/null | openssl pkey -pubin -outform der 2>/dev/null | openssl dgst -sha256 -raw | sed 's/^.* //')
+  kubeadm join ` + apiServerEndpoint + ` \
+    --token ` + token + ` \
+    --discovery-token-ca-cert-hash sha256:$CA_HASH \
+    --ignore-preflight-errors=Swap
+`)
 	}
 
-	return script
+	return script.String()
 }
 
 // generateDefaultKubeletConfig generates a default KubeletConfiguration
