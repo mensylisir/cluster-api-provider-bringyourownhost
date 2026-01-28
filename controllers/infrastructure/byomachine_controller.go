@@ -674,10 +674,44 @@ func (r *ByoMachineReconciler) attachByoHost(ctx context.Context, machineScope *
 
 		// Check if another reconciler already claimed this host
 		if latestHost.Status.MachineRef != nil {
-			logger.Info("Host already claimed by another machine, trying another host", "byohost", latestHost.Name)
-			// Wait with exponential backoff before trying another host
-			time.Sleep(exponentialBackoff(attempt))
-			continue
+			// Check if the referenced ByoMachine still exists
+			existingMachine := &infrav1.ByoMachine{}
+			err := r.Client.Get(ctx, client.ObjectKey{
+				Namespace: latestHost.Status.MachineRef.Namespace,
+				Name:      latestHost.Status.MachineRef.Name,
+			}, existingMachine)
+			if err != nil {
+				if apierrors.IsNotFound(err) {
+					// Referenced ByoMachine no longer exists, this host is orphaned
+					// Clear the stale MachineRef and proceed to claim it
+					logger.Info("Host has stale MachineRef pointing to deleted ByoMachine, clearing and proceeding",
+						"staleMachineRef", latestHost.Status.MachineRef.Name, "byohost", latestHost.Name)
+
+					// Create a helper to patch the host
+					hostHelper, patchErr := patch.NewHelper(latestHost, r.Client)
+					if patchErr == nil {
+						latestHost.Status.MachineRef = nil
+						if patchErr := hostHelper.Patch(ctx, latestHost); patchErr != nil {
+							logger.Error(patchErr, "failed to clear stale MachineRef", "byohost", latestHost.Name)
+						}
+					}
+					// Proceed to claim this host
+				} else {
+					// Error checking ByoMachine, skip this host
+					logger.Error(err, "failed to check existing ByoMachine, trying another host", "byohost", latestHost.Name)
+					time.Sleep(exponentialBackoff(attempt))
+					continue
+				}
+			} else if existingMachine.DeletionTimestamp.IsZero() {
+				// Referenced ByoMachine still exists and is not being deleted
+				logger.Info("Host already claimed by another machine, trying another host", "byohost", latestHost.Name)
+				time.Sleep(exponentialBackoff(attempt))
+				continue
+			}
+			// If we reach here, either:
+			// 1. The referenced ByoMachine was deleted (we cleared the MachineRef above)
+			// 2. The referenced ByoMachine is being deleted (shouldn't happen, but we proceed anyway)
+			// We continue to try claiming this host
 		}
 
 		// Try to acquire lease on this host
@@ -832,6 +866,10 @@ func (r *ByoMachineReconciler) markHostForCleanup(ctx context.Context, machineSc
 		machineScope.ByoHost.Annotations = map[string]string{}
 	}
 	machineScope.ByoHost.Annotations[infrav1.HostCleanupAnnotation] = ""
+
+	// Immediately clear the MachineRef to signal the Agent that the host is being released
+	// This is critical for scale-down scenarios where the Node needs to be deleted
+	machineScope.ByoHost.Status.MachineRef = nil
 
 	// Issue the patch for byohost
 	return helper.Patch(ctx, machineScope.ByoHost)
