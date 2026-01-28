@@ -1015,7 +1015,9 @@ func (r *ByoMachineReconciler) createBootstrapSecretTLSBootstrap(ctx context.Con
 
 	// Method 3: For TLS Bootstrap mode with external clusters, generate bootstrap kubeconfig
 	// from the local cluster (where this controller is running)
-	if caData == nil || bootstrapKubeconfigData == nil {
+	// Only generate if BOTH caData and bootstrapKubeconfigData are nil
+	// This prevents overriding data already obtained from BootstrapKubeconfig in Method 2
+	if caData == nil && bootstrapKubeconfigData == nil {
 		logger.V(4).Info("Generating bootstrap kubeconfig from local cluster for TLS Bootstrap mode")
 
 		// Get the in-cluster config to create a bootstrap kubeconfig
