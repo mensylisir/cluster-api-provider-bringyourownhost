@@ -785,9 +785,6 @@ func (r *HostReconciler) bootstrapK8sNodeTLS(ctx context.Context, byoHost *infra
 		logger.Info("Wrote kube-proxy kubeconfig", "path", kubeProxyKubeconfigPath)
 	}
 
-	// Start kube-proxy if ManageKubeProxy is true
-	if byoHost.Spec.ManageKubeProxy {
-
 	// Start kubelet with TLS bootstrap configuration
 	kubeletArgs := []string{
 		"--bootstrap-kubeconfig=/etc/kubernetes/bootstrap-kubeconfig",
