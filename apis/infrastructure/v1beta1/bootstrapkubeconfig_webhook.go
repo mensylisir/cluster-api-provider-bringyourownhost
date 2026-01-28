@@ -54,10 +54,10 @@ func (wh *BootstrapKubeconfigMutatingWebhook) Handle(ctx context.Context, req ad
 		return admission.Errored(http.StatusBadRequest, err)
 	}
 
-	// Only process if APIServer is empty (cloned by MachineSet)
-	if obj.Spec.APIServer == "" {
-		if err := wh.populateAPIServerFromCluster(ctx, obj); err != nil {
-			bootstrapkubeconfiglog.Error(err, "failed to populate APIServer from cluster", "name", obj.Name)
+	// Only process if APIServer or CertificateAuthorityData is empty (cloned by MachineSet)
+	if obj.Spec.APIServer == "" || obj.Spec.CertificateAuthorityData == "" {
+		if err := wh.populateFromCluster(ctx, obj); err != nil {
+			bootstrapkubeconfiglog.Error(err, "failed to populate from cluster", "name", obj.Name)
 			// Don't fail - let the validating webhook handle the error
 		}
 	}
@@ -70,11 +70,13 @@ func (wh *BootstrapKubeconfigMutatingWebhook) Handle(ctx context.Context, req ad
 	return admission.PatchResponseFromRaw(req.Object.Raw, marshaled)
 }
 
-func (wh *BootstrapKubeconfigMutatingWebhook) populateAPIServerFromCluster(ctx context.Context, obj *BootstrapKubeconfig) error {
+func (wh *BootstrapKubeconfigMutatingWebhook) populateFromCluster(ctx context.Context, obj *BootstrapKubeconfig) error {
 	// Find the Cluster owner in the ownerReferences
 	var clusterName types.NamespacedName
+	var machineName string
 	for _, ref := range obj.GetOwnerReferences() {
 		if ref.Kind == "Machine" {
+			machineName = ref.Name
 			// Look up the Machine to find its Cluster owner
 			machine := &clusterv1.Machine{}
 			if err := wh.Client.Get(ctx, types.NamespacedName{
@@ -129,9 +131,32 @@ func (wh *BootstrapKubeconfigMutatingWebhook) populateAPIServerFromCluster(ctx c
 	}
 
 	// Populate the APIServer from the controlPlaneEndpoint
-	if byoCluster.Spec.ControlPlaneEndpoint.Host != "" && byoCluster.Spec.ControlPlaneEndpoint.Port != 0 {
+	if obj.Spec.APIServer == "" && byoCluster.Spec.ControlPlaneEndpoint.Host != "" && byoCluster.Spec.ControlPlaneEndpoint.Port != 0 {
 		obj.Spec.APIServer = fmt.Sprintf("https://%s:%d", byoCluster.Spec.ControlPlaneEndpoint.Host, byoCluster.Spec.ControlPlaneEndpoint.Port)
 		bootstrapkubeconfiglog.Info("populated APIServer from cluster", "apiserver", obj.Spec.APIServer)
+	}
+
+	// Populate CertificateAuthorityData from the original BootstrapKubeconfig
+	if obj.Spec.CertificateAuthorityData == "" && machineName != "" {
+		machine := &clusterv1.Machine{}
+		if err := wh.Client.Get(ctx, types.NamespacedName{
+			Name:      machineName,
+			Namespace: obj.GetNamespace(),
+		}, machine); err == nil {
+			// Get the original BootstrapKubeconfig from Machine's bootstrap config ref
+			if machine.Spec.Bootstrap.ConfigRef != nil {
+				originalBK := &BootstrapKubeconfig{}
+				if err := wh.Client.Get(ctx, types.NamespacedName{
+					Name:      machine.Spec.Bootstrap.ConfigRef.Name,
+					Namespace: obj.GetNamespace(),
+				}, originalBK); err == nil {
+					if originalBK.Spec.CertificateAuthorityData != "" {
+						obj.Spec.CertificateAuthorityData = originalBK.Spec.CertificateAuthorityData
+						bootstrapkubeconfiglog.Info("populated CertificateAuthorityData from original BootstrapKubeconfig", "name", originalBK.Name)
+					}
+				}
+			}
+		}
 	}
 
 	return nil
