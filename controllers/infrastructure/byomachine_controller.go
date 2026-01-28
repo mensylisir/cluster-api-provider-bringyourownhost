@@ -402,8 +402,20 @@ func (r *ByoMachineReconciler) updateNodeProviderID(ctx context.Context, machine
 
 	providerID, node, err := r.setNodeProviderID(ctx, remoteClient, machineScope.ByoHost)
 	if err != nil {
+		// Check if the error is because the Node doesn't exist yet
+		// This is expected when the kubelet is still bootstrapping
+		if apierrors.IsNotFound(err) {
+			logger.Info("Node not found yet, waiting for kubelet to register the node",
+				"node", machineScope.ByoHost.Name)
+			conditions.MarkFalse(machineScope.ByoMachine, infrav1.BYOHostReady,
+				infrav1.WaitingForNodeRefReason, clusterv1.ConditionSeverityInfo,
+				"Waiting for node %s to be registered", machineScope.ByoHost.Name)
+			// Requeue after a short delay instead of returning an error
+			return ctrl.Result{RequeueAfter: RequeueForbyohost}, nil
+		}
+		// For other errors, log and return
 		logger.Error(err, "failed to set node providerID")
-		r.Recorder.Eventf(machineScope.ByoMachine, corev1.EventTypeWarning, "SetNodeProviderFailed", "Node %s does not exist", machineScope.ByoHost.Name)
+		r.Recorder.Eventf(machineScope.ByoMachine, corev1.EventTypeWarning, "SetNodeProviderFailed", "Failed to set ProviderID: %v", err)
 		return ctrl.Result{}, err
 	}
 

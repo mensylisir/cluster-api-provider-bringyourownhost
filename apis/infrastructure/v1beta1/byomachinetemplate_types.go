@@ -4,6 +4,7 @@
 package v1beta1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -66,6 +67,26 @@ type MachineCapacity struct {
 
 // ByoMachineTemplateStatus defines the observed state of ByoMachineTemplate
 type ByoMachineTemplateStatus struct {
+	// Capacity defines the resource capacity for this machine template.
+	// This value is used for autoscaling from zero operations as defined in:
+	// https://github.com/kubernetes-sigs/cluster-api/blob/main/docs/proposals/20210310-opt-in-autoscaling-from-zero.md
+	// +optional
+	Capacity corev1.ResourceList `json:"capacity,omitempty"`
+
+	// NodeInfo contains information about the node's architecture and OS.
+	// +optional
+	NodeInfo *NodeInfo `json:"nodeInfo,omitempty"`
+}
+
+// NodeInfo contains information about the node's architecture and operating system.
+// +kubebuilder:validation:MinProperties=1
+type NodeInfo struct {
+	// Architecture is the CPU architecture of the node (e.g., amd64, arm64).
+	// +optional
+	Architecture string `json:"architecture,omitempty"`
+	// OperatingSystem is the operating system of the node (e.g., linux, windows).
+	// +optional
+	OperatingSystem string `json:"operatingSystem,omitempty"`
 }
 
 //+kubebuilder:object:root=true

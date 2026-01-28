@@ -179,39 +179,17 @@ func (r ByoClusterReconciler) reconcileNormal(ctx context.Context, byoCluster *i
 
 	logger := log.FromContext(ctx)
 
-	// For BYOH/binary/external clusters, we must manually patch the CAPI Cluster status
-	// to unblock downstream controllers (Machine, MachineDeployment)
-	// This is necessary because BYOH doesn't use CAPI's standard control plane management
-	needsPatch := !cluster.Status.InfrastructureReady || !cluster.Status.ControlPlaneReady
-	if needsPatch {
-		// Initialize the patch helper for the CAPI Cluster
-		patchHelper, err := patch.NewHelper(cluster, r.Client)
-		if err != nil {
-			return reconcile.Result{}, errors.Wrap(err, "failed to init patch helper for Cluster")
-		}
-
-		// Set the required status fields to unblock Machine provisioning
-		cluster.Status.InfrastructureReady = true
-		cluster.Status.ControlPlaneReady = true
-
-		// Apply the patch
-		if err := patchHelper.Patch(ctx, cluster); err != nil {
-			logger.Error(err, "failed to patch Cluster status for unmanaged control plane",
-				"cluster", cluster.Name,
-				"infrastructureReady", cluster.Status.InfrastructureReady,
-				"controlPlaneReady", cluster.Status.ControlPlaneReady)
-			return reconcile.Result{}, err
-		}
-		logger.Info("Successfully patched Cluster status for BYOH cluster",
-			"cluster", cluster.Name,
-			"infrastructureReady", cluster.Status.InfrastructureReady,
-			"controlPlaneReady", cluster.Status.ControlPlaneReady)
-	} else {
-		logger.V(4).Info("Cluster status already ready, no patch needed",
-			"cluster", cluster.Name,
-			"infrastructureReady", cluster.Status.InfrastructureReady,
-			"controlPlaneReady", cluster.Status.ControlPlaneReady)
-	}
+	// NOTE: Infrastructure Provider should ONLY set InfrastructureReady.
+	// ControlPlaneReady is the responsibility of the Control Plane Provider.
+	// For external/unmanaged clusters, users should manually set ControlPlaneReady
+	// or use a separate mechanism (e.g., annotation-based).
+	//
+	// If you need to unblock worker machines for external clusters,
+	// consider using the cluster.x-k8s.io/control-plane-initialized annotation
+	// on the Cluster object instead of patching ControlPlaneReady here.
+	logger.V(4).Info("ByoCluster reconcileNormal completed",
+		"cluster", cluster.Name,
+		"byoClusterReady", byoCluster.Status.Ready)
 
 	return reconcile.Result{}, nil
 }

@@ -673,6 +673,10 @@ func (r *HostReconciler) bootstrapK8sNodeTLS(ctx context.Context, byoHost *infra
 	// Write CA certificate
 	if caCrt, ok := secret.Data["ca.crt"]; ok {
 		caPath := "/etc/kubernetes/pki/ca.crt"
+		// Create parent directory if it doesn't exist
+		if err := r.FileWriter.MkdirIfNotExists("/etc/kubernetes/pki"); err != nil {
+			return fmt.Errorf("failed to create /etc/kubernetes/pki directory: %w", err)
+		}
 		if err := r.FileWriter.WriteToFile(&cloudinit.Files{
 			Path:        caPath,
 			Content:     string(caCrt),
@@ -686,6 +690,10 @@ func (r *HostReconciler) bootstrapK8sNodeTLS(ctx context.Context, byoHost *infra
 	// Write bootstrap kubeconfig
 	if bootstrapKubeconfig, ok := secret.Data["bootstrap-kubeconfig"]; ok {
 		bootstrapKubeconfigPath := "/etc/kubernetes/bootstrap-kubeconfig"
+		// Create parent directory if it doesn't exist
+		if err := r.FileWriter.MkdirIfNotExists("/etc/kubernetes"); err != nil {
+			return fmt.Errorf("failed to create /etc/kubernetes directory: %w", err)
+		}
 		if err := r.FileWriter.WriteToFile(&cloudinit.Files{
 			Path:        bootstrapKubeconfigPath,
 			Content:     string(bootstrapKubeconfig),
@@ -699,6 +707,10 @@ func (r *HostReconciler) bootstrapK8sNodeTLS(ctx context.Context, byoHost *infra
 	// Write kubelet configuration if provided
 	if kubeletConfig, ok := secret.Data["kubelet-config.yaml"]; ok {
 		kubeletConfigPath := "/var/lib/kubelet/config.yaml"
+		// Create parent directory if it doesn't exist
+		if err := r.FileWriter.MkdirIfNotExists("/var/lib/kubelet"); err != nil {
+			return fmt.Errorf("failed to create /var/lib/kubelet directory: %w", err)
+		}
 		if err := r.FileWriter.WriteToFile(&cloudinit.Files{
 			Path:        kubeletConfigPath,
 			Content:     string(kubeletConfig),
@@ -714,6 +726,10 @@ func (r *HostReconciler) bootstrapK8sNodeTLS(ctx context.Context, byoHost *infra
 		// Write kube-proxy-config.yaml (required by kube-proxy service)
 		if kubeProxyConfigYAML, ok := secret.Data["kube-proxy-config.yaml"]; ok {
 			kubeProxyConfigPath := "/etc/kubernetes/kube-proxy-config.yaml"
+			// Create parent directory if it doesn't exist
+			if err := r.FileWriter.MkdirIfNotExists("/etc/kubernetes"); err != nil {
+				return fmt.Errorf("failed to create /etc/kubernetes directory: %w", err)
+			}
 			if err := r.FileWriter.WriteToFile(&cloudinit.Files{
 				Path:        kubeProxyConfigPath,
 				Content:     string(kubeProxyConfigYAML),
@@ -727,6 +743,10 @@ func (r *HostReconciler) bootstrapK8sNodeTLS(ctx context.Context, byoHost *infra
 		// Write kube-proxy.kubeconfig (required for authentication)
 		if kubeProxyConfig, ok := secret.Data["kube-proxy.kubeconfig"]; ok {
 			kubeProxyKubeconfigPath := "/etc/kubernetes/kube-proxy.kubeconfig"
+			// Create parent directory if it doesn't exist
+			if err := r.FileWriter.MkdirIfNotExists("/etc/kubernetes"); err != nil {
+				return fmt.Errorf("failed to create /etc/kubernetes directory: %w", err)
+			}
 			if err := r.FileWriter.WriteToFile(&cloudinit.Files{
 				Path:        kubeProxyKubeconfigPath,
 				Content:     string(kubeProxyConfig),
