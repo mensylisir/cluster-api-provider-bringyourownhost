@@ -817,7 +817,12 @@ func (r *ByoMachineReconciler) attachByoHost(ctx context.Context, machineScope *
 		latestHost.Spec.KubernetesVersion = machineScope.ByoMachine.Spec.KubernetesVersion
 
 		// Sync ManageKubeProxy from ByoMachine to ByoHost (only for TLSBootstrap mode)
-		latestHost.Spec.ManageKubeProxy = machineScope.ByoMachine.Spec.ManageKubeProxy
+		// For TLSBootstrap mode, default to true if not explicitly set
+		manageKubeProxy := machineScope.ByoMachine.Spec.ManageKubeProxy
+		if machineScope.ByoMachine.Spec.JoinMode == infrav1.JoinModeTLSBootstrap && !manageKubeProxy {
+			manageKubeProxy = true
+		}
+		latestHost.Spec.ManageKubeProxy = manageKubeProxy
 
 		if latestHost.Annotations == nil {
 			latestHost.Annotations = make(map[string]string)
