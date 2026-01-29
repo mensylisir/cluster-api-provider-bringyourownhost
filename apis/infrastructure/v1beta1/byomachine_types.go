@@ -94,6 +94,7 @@ type ByoMachineSpec struct {
 	// Only valid when JoinMode is tlsBootstrap.
 	// - false: kube-proxy runs as DaemonSet (cloud native approach)
 	// - true: Agent starts kube-proxy binary (binary deployment approach)
+	// +kubebuilder:default=true
 	// +optional
 	ManageKubeProxy bool `json:"manageKubeProxy,omitempty"`
 
