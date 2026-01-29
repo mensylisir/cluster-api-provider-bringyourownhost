@@ -779,8 +779,8 @@ func (r *HostReconciler) bootstrapK8sNodeTLS(ctx context.Context, byoHost *infra
 	// Write kube-proxy configuration (always write for TLS Bootstrap mode, even if ManageKubeProxy is false)
 	// This allows the external kube-proxy to use the configuration
 	kubeProxyConfigPath := "/var/lib/kube-proxy/kube-proxy-config.yaml"
-	if err := r.FileWriter.MkdirIfNotExists("/etc/kubernetes"); err != nil {
-		return fmt.Errorf("failed to create /etc/kubernetes directory: %w", err)
+	if err := r.FileWriter.MkdirIfNotExists("/var/lib/kube-proxy"); err != nil {
+		return fmt.Errorf("failed to create /var/lib/kube-proxy directory: %w", err)
 	}
 
 	var kubeProxyConfigContent string
