@@ -694,11 +694,16 @@ func (r *HostReconciler) bootstrapK8sNodeTLS(ctx context.Context, byoHost *infra
 
 	// Write CA certificate
 	var caCertData string
+	var bootstrapToken string
 	if caCrt, ok := secret.Data["ca.crt"]; ok {
 		caCertData = string(caCrt)
-	} else if bootstrapKubeconfig, ok := secret.Data["bootstrap-kubeconfig"]; ok {
-		// Extract CA data from bootstrap-kubeconfig
-		caCertData = extractCACertificate(string(bootstrapKubeconfig))
+	}
+	// Extract CA and token from bootstrap-kubeconfig
+	if bootstrapKubeconfig, ok := secret.Data["bootstrap-kubeconfig"]; ok {
+		if caCertData == "" {
+			caCertData = extractCACertificate(string(bootstrapKubeconfig))
+		}
+		bootstrapToken = extractTokenFromBootstrapKubeconfig(string(bootstrapKubeconfig))
 	}
 
 	if caCertData != "" {
@@ -773,38 +778,54 @@ func (r *HostReconciler) bootstrapK8sNodeTLS(ctx context.Context, byoHost *infra
 
 	// Write kube-proxy configuration (always write for TLS Bootstrap mode, even if ManageKubeProxy is false)
 	// This allows the external kube-proxy to use the configuration
-	if kubeProxyConfigYAML, hasConfig := secret.Data["kube-proxy-config.yaml"]; hasConfig {
-		kubeProxyConfigPath := "/var/lib/kube-proxy/kube-proxy-config.yaml"
-		// Create parent directory if it doesn't exist
-		if err := r.FileWriter.MkdirIfNotExists("/var/lib/kube-proxy"); err != nil {
-			return fmt.Errorf("failed to create /var/lib/kube-proxy directory: %w", err)
-		}
-		if err := r.FileWriter.WriteToFile(&cloudinit.Files{
-			Path:        kubeProxyConfigPath,
-			Content:     string(kubeProxyConfigYAML),
-			Permissions: "0644",
-		}); err != nil {
-			return fmt.Errorf("failed to write kube-proxy config: %w", err)
-		}
-		logger.Info("Wrote kube-proxy config", "path", kubeProxyConfigPath)
+	kubeProxyConfigPath := "/var/lib/kube-proxy/kube-proxy-config.yaml"
+	if err := r.FileWriter.MkdirIfNotExists("/var/lib/kube-proxy"); err != nil {
+		return fmt.Errorf("failed to create /var/lib/kube-proxy directory: %w", err)
 	}
 
-	// Write kube-proxy.kubeconfig (always write for TLS Bootstrap mode)
-	if kubeProxyKubeconfig, ok := secret.Data["kube-proxy.kubeconfig"]; ok {
-		kubeProxyKubeconfigPath := "/etc/kubernetes/kube-proxy.kubeconfig"
-		// Create parent directory if it doesn't exist
-		if err := r.FileWriter.MkdirIfNotExists("/etc/kubernetes"); err != nil {
-			return fmt.Errorf("failed to create /etc/kubernetes directory: %w", err)
-		}
-		if err := r.FileWriter.WriteToFile(&cloudinit.Files{
-			Path:        kubeProxyKubeconfigPath,
-			Content:     string(kubeProxyKubeconfig),
-			Permissions: "0600",
-		}); err != nil {
-			return fmt.Errorf("failed to write kube-proxy kubeconfig: %w", err)
-		}
-		logger.Info("Wrote kube-proxy kubeconfig", "path", kubeProxyKubeconfigPath)
+	var kubeProxyConfigContent string
+	if kubeProxyConfigYAML, hasConfig := secret.Data["kube-proxy-config.yaml"]; hasConfig {
+		kubeProxyConfigContent = string(kubeProxyConfigYAML)
+		logger.Info("Using kube-proxy config from TLS bootstrap secret")
+	} else {
+		// Generate default kube-proxy configuration as fallback
+		kubeProxyConfigContent = generateDefaultKubeProxyConfig()
+		logger.Info("No kube-proxy config in secret, using default configuration")
 	}
+
+	if err := r.FileWriter.WriteToFile(&cloudinit.Files{
+		Path:        kubeProxyConfigPath,
+		Content:     kubeProxyConfigContent,
+		Permissions: "0644",
+	}); err != nil {
+		return fmt.Errorf("failed to write kube-proxy config: %w", err)
+	}
+	logger.Info("Wrote kube-proxy config", "path", kubeProxyConfigPath)
+
+	// Write kube-proxy.kubeconfig (always write for TLS Bootstrap mode)
+	kubeProxyKubeconfigPath := "/etc/kubernetes/kube-proxy.kubeconfig"
+	if err := r.FileWriter.MkdirIfNotExists("/etc/kubernetes"); err != nil {
+		return fmt.Errorf("failed to create /etc/kubernetes directory: %w", err)
+	}
+
+	var kubeProxyKubeconfigContent string
+	if kubeProxyKubeconfig, ok := secret.Data["kube-proxy.kubeconfig"]; ok {
+		kubeProxyKubeconfigContent = string(kubeProxyKubeconfig)
+		logger.Info("Using kube-proxy.kubeconfig from TLS bootstrap secret")
+	} else {
+		// Generate default kube-proxy.kubeconfig as fallback using bootstrap token
+		kubeProxyKubeconfigContent = generateDefaultKubeProxyKubeconfig(caCertData, restConfig.Host, bootstrapToken)
+		logger.Info("No kube-proxy.kubeconfig in secret, using default configuration")
+	}
+
+	if err := r.FileWriter.WriteToFile(&cloudinit.Files{
+		Path:        kubeProxyKubeconfigPath,
+		Content:     kubeProxyKubeconfigContent,
+		Permissions: "0600",
+	}); err != nil {
+		return fmt.Errorf("failed to write kube-proxy kubeconfig: %w", err)
+	}
+	logger.Info("Wrote kube-proxy kubeconfig", "path", kubeProxyKubeconfigPath)
 
 	// Start kubelet with TLS bootstrap configuration
 	kubeletArgs := []string{
@@ -1272,4 +1293,44 @@ func extractCACertificate(kubeconfigContent string) string {
 	}
 
 	return ""
+}
+
+// extractTokenFromBootstrapKubeconfig extracts the bootstrap token from a kubeconfig string
+func extractTokenFromBootstrapKubeconfig(kubeconfigContent string) string {
+	// Parse the kubeconfig
+	config, err := clientcmd.Load([]byte(kubeconfigContent))
+	if err != nil {
+		return ""
+	}
+
+	// Get token from the first auth info
+	for _, authInfo := range config.AuthInfos {
+		if len(authInfo.Token) > 0 {
+			return authInfo.Token
+		}
+	}
+
+	return ""
+}
+
+// generateDefaultKubeProxyKubeconfig generates a default kube-proxy.kubeconfig
+func generateDefaultKubeProxyKubeconfig(caData, server, token string) string {
+	return fmt.Sprintf(`apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    certificate-authority-data: %s
+    server: %s
+  name: default
+contexts:
+- context:
+    cluster: default
+    user: default
+  name: default
+current-context: default
+users:
+- name: default
+  user:
+    token: %s
+`, caData, server, token)
 }
