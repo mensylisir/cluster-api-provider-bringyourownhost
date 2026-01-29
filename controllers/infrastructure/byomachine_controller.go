@@ -1101,7 +1101,6 @@ func (r *ByoMachineReconciler) createBootstrapSecretTLSBootstrap(ctx context.Con
 	// from the local cluster (where this controller is running)
 	// Only generate if BOTH caData and bootstrapKubeconfigData are nil
 	// This prevents overriding data already obtained from BootstrapKubeconfig in Method 2
-	var generatedTokenStr string
 	var apiServerEndpoint string
 	if caData == nil && bootstrapKubeconfigData == nil {
 		logger.V(4).Info("Generating bootstrap kubeconfig from local cluster for TLS Bootstrap mode")
@@ -1129,11 +1128,10 @@ func (r *ByoMachineReconciler) createBootstrapSecretTLSBootstrap(ctx context.Con
 		// Get the in-cluster config to create a bootstrap kubeconfig
 		restConfig, err := clientcmd.DefaultClientConfig.ClientConfig()
 		if err == nil {
-			bootstrapKubeconfigContent, tokenStr, err := generateBootstrapKubeconfigWithToken(ctx, restConfig, r.Client, apiServerEndpoint)
+			bootstrapKubeconfigContent, _, err := generateBootstrapKubeconfigWithToken(ctx, restConfig, r.Client, apiServerEndpoint)
 			if err == nil {
 				logger.Info("Generated bootstrap kubeconfig with new bootstrap token")
 				bootstrapKubeconfigData = []byte(bootstrapKubeconfigContent)
-				generatedTokenStr = tokenStr
 
 				// Extract CA from the generated kubeconfig
 				if caData == nil {
@@ -1322,7 +1320,7 @@ func (r *ByoMachineReconciler) createBootstrapSecretTLSBootstrap(ctx context.Con
 	}
 
 	// Generate kube-proxy.kubeconfig if not already present
-	// Use in-cluster CA and certificate from bootstrapKubeconfig to generate proper kubeconfig
+	// Use in-cluster CA and reference kubelet certificate (same as kubelet.conf)
 	if _, ok := tlsBootstrapSecret.Data["kube-proxy.kubeconfig"]; !ok {
 		// Get API server endpoint from in-cluster config
 		if apiServerEndpoint == "" {
@@ -1337,7 +1335,7 @@ func (r *ByoMachineReconciler) createBootstrapSecretTLSBootstrap(ctx context.Con
 			}
 		}
 
-		// Get CA data from in-cluster config or from bootstrapKubeconfig
+		// Get CA data from in-cluster config
 		var caData string
 		restConfig, err := clientcmd.DefaultClientConfig.ClientConfig()
 		if err == nil {
@@ -1357,22 +1355,34 @@ func (r *ByoMachineReconciler) createBootstrapSecretTLSBootstrap(ctx context.Con
 			}
 		}
 
-		// Get certificate and key from bootstrapKubeconfig
-		certData, keyData := extractCertAndKeyFromKubeconfig(string(bootstrapKubeconfigData))
-
-		if certData != "" && keyData != "" {
-			// Generate kube-proxy.kubeconfig using certificate (full permissions)
-			kubeProxyKubeconfig := generateKubeProxyKubeconfigWithCert(caData, apiServerEndpoint, certData, keyData)
+		if caData != "" {
+			// Generate kube-proxy.kubeconfig using file references to kubelet certificates
+			// This uses the same certificate as kubelet (which has system:nodes group permissions)
+			kubeProxyKubeconfig := fmt.Sprintf(`apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    certificate-authority-data: %s
+    server: %s
+  name: default-cluster
+contexts:
+- context:
+    cluster: default-cluster
+    namespace: default
+    user: default-auth
+  name: default-context
+current-context: default-context
+users:
+- name: default-auth
+  user:
+    client-certificate: /var/lib/kubelet/pki/kubelet-client-current.pem
+    client-key: /var/lib/kubelet/pki/kubelet-client-current.pem
+`, caData, apiServerEndpoint)
 			tlsBootstrapSecret.Data["kube-proxy.kubeconfig"] = []byte(kubeProxyKubeconfig)
-			logger.Info("Generated kube-proxy.kubeconfig with certificate")
-		} else if caData != "" {
+			logger.Info("Generated kube-proxy.kubeconfig referencing kubelet certificate")
+		} else if len(bootstrapKubeconfigData) > 0 {
 			// Fallback: use bootstrap token
-			var tokenToUse string
-			if generatedTokenStr != "" {
-				tokenToUse = generatedTokenStr
-			} else if len(bootstrapKubeconfigData) > 0 {
-				tokenToUse = extractTokenFromBootstrapKubeconfig(string(bootstrapKubeconfigData))
-			}
+			tokenToUse := extractTokenFromBootstrapKubeconfig(string(bootstrapKubeconfigData))
 			if tokenToUse != "" {
 				kubeProxyKubeconfig := generateKubeProxyKubeconfig(tokenToUse, apiServerEndpoint)
 				tlsBootstrapSecret.Data["kube-proxy.kubeconfig"] = []byte(kubeProxyKubeconfig)
