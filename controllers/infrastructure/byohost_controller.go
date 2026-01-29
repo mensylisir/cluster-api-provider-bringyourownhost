@@ -86,9 +86,6 @@ func (r *ByoHostReconciler) Reconcile(ctx context.Context, req ctrl.Request) (_ 
 		cleanupTimeout := r.getCleanupTimeout(byoHost)
 
 		// Check if we should force cleanup (Agent is unavailable)
-		// Force cleanup if:
-		// 1. ByoHost is being deleted and has been for longer than cleanup timeout, OR
-		// 2. Cleanup annotation has been set for longer than cleanup timeout (Agent not processing)
 		shouldForceCleanup := false
 		cleanupStarted := time.Now()
 
@@ -121,41 +118,31 @@ func (r *ByoHostReconciler) Reconcile(ctx context.Context, req ctrl.Request) (_ 
 			logger.Info("Recording cleanup start time", "timeout", cleanupTimeout)
 		}
 
-		// If MachineRef is already cleared or we're forcing cleanup, we need to decide:
-		// - If Agent is available and cleanup annotation exists, wait for Agent to process
-		// - If Agent is unavailable (timeout exceeded), force cleanup (delete Node, release host)
-		// Only release the host if we're forcing cleanup OR cleanup annotation is gone
-		if byoHost.Status.MachineRef == nil || shouldForceCleanup {
-			logger.Info("Releasing host (Agent unavailable or cleanup already complete)",
+		if shouldForceCleanup {
+			logger.Info("Force cleanup: Agent unavailable or timeout exceeded",
 				"forceCleanup", shouldForceCleanup)
 
-			// If we're forcing cleanup (Agent is unavailable), delete the Node object
-			// to ensure the node is removed from the cluster even without Agent intervention
-			if shouldForceCleanup {
-				node := &corev1.Node{}
-				if err := r.Client.Get(ctx, client.ObjectKey{Name: byoHost.Name}, node); err == nil {
-					logger.Info("Agent unavailable, deleting Node object directly",
+			node := &corev1.Node{}
+			if err := r.Client.Get(ctx, client.ObjectKey{Name: byoHost.Name}, node); err == nil {
+				logger.Info("Deleting Node object directly",
+					"node", byoHost.Name)
+				if err := r.Client.Delete(ctx, node); err != nil && !apierrors.IsNotFound(err) {
+					logger.Error(err, "failed to delete Node object during force cleanup",
 						"node", byoHost.Name)
-					if err := r.Client.Delete(ctx, node); err != nil && !apierrors.IsNotFound(err) {
-						logger.Error(err, "failed to delete Node object during force cleanup",
-							"node", byoHost.Name)
-						return ctrl.Result{}, err
-					}
-					logger.Info("Successfully deleted Node object during force cleanup",
-						"node", byoHost.Name)
+					return ctrl.Result{}, err
 				}
+				logger.Info("Successfully deleted Node object during force cleanup",
+					"node", byoHost.Name)
 			}
 
-			// Clear MachineRef if not already cleared
+			// Clear MachineRef
 			byoHost.Status.MachineRef = nil
 
 			// Record force cleanup in audit log
-			if shouldForceCleanup {
-				auditEntry := fmt.Sprintf("timestamp=%s,reason=agent_unavailable,timeout=%v,elapsed=%v,controller=byohost-controller",
-					time.Now().Format(time.RFC3339), cleanupTimeout, time.Since(cleanupStarted))
-				byoHost.Annotations[forceCleanupAuditAnnotation] = auditEntry
-				logger.Info("Force cleanup recorded in audit log", "audit", auditEntry)
-			}
+			auditEntry := fmt.Sprintf("timestamp=%s,reason=agent_unavailable,timeout=%v,elapsed=%v,controller=byohost-controller",
+				time.Now().Format(time.RFC3339), cleanupTimeout, time.Since(cleanupStarted))
+			byoHost.Annotations[forceCleanupAuditAnnotation] = auditEntry
+			logger.Info("Force cleanup recorded in audit log", "audit", auditEntry)
 
 			// Remove cleanup-related annotations
 			delete(byoHost.Annotations, infrastructurev1beta1.HostCleanupAnnotation)
@@ -165,9 +152,8 @@ func (r *ByoHostReconciler) Reconcile(ctx context.Context, req ctrl.Request) (_ 
 			return ctrl.Result{}, nil
 		}
 
-		// MachineRef exists and we're within timeout - wait for Agent to process
+		// Cleanup annotation exists but within timeout - wait for Agent to process
 		logger.Info("Waiting for Agent to complete cleanup",
-			"machineRef", byoHost.Status.MachineRef.Name,
 			"timeout", cleanupTimeout,
 			"elapsed", time.Since(cleanupStarted))
 		return ctrl.Result{RequeueAfter: cleanupTimeout}, nil
