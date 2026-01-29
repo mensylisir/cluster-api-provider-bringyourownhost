@@ -809,7 +809,7 @@ func (r *HostReconciler) bootstrapK8sNodeTLS(ctx context.Context, byoHost *infra
 	}
 
 	// Read ~/.byoh/config and extract certificate data for kube-proxy
-	byohConfig, err := clientcmd.Load([]byte{})
+	byohConfig, err := clientcmd.LoadFromFile(registration.GetBYOHConfigPath())
 	if err != nil {
 		return fmt.Errorf("failed to load byoh config: %w", err)
 	}
