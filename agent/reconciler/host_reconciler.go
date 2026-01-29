@@ -603,7 +603,7 @@ func (r *HostReconciler) resetNode(ctx context.Context, byoHost *infrastructurev
 
 	node := &corev1.Node{}
 	if err := r.Client.Get(ctx, types.NamespacedName{Name: byoHost.Name}, node); err != nil {
-		logger.V(4).Info("Node object not found, skipping deletion", "node", byoHost.Name)
+		logger.Info("Node object not found, skipping deletion", "node", byoHost.Name, "error", err)
 	} else {
 		logger.Info("Deleting Node object from API server", "node", byoHost.Name)
 		if err := r.Client.Delete(ctx, node); err != nil {
