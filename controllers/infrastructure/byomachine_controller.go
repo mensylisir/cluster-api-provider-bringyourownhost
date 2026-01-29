@@ -785,7 +785,7 @@ func (r *ByoMachineReconciler) attachByoHost(ctx context.Context, machineScope *
 
 		// For TLS Bootstrap mode, create and use the TLS bootstrap secret
 		if machineScope.ByoMachine.Spec.JoinMode == infrav1.JoinModeTLSBootstrap {
-			tlsBootstrapSecret, err := r.createBootstrapSecretTLSBootstrap(ctx, machineScope)
+			tlsBootstrapSecret, err := r.createBootstrapSecretTLSBootstrap(ctx, machineScope, latestHost)
 			if err != nil {
 				logger.Error(err, "failed to create TLS bootstrap secret")
 				// Release the lease before returning
@@ -1007,7 +1007,7 @@ func (r *ByoMachineReconciler) convertNetworkToAddresses(network []infrav1.Netwo
 // createBootstrapSecretTLSBootstrap creates a bootstrap secret for TLS Bootstrap mode.
 // This secret contains the CA certificate and bootstrap kubeconfig that the Agent
 // uses to connect to the cluster and perform TLS bootstrapping.
-func (r *ByoMachineReconciler) createBootstrapSecretTLSBootstrap(ctx context.Context, machineScope *byoMachineScope) (*corev1.Secret, error) {
+func (r *ByoMachineReconciler) createBootstrapSecretTLSBootstrap(ctx context.Context, machineScope *byoMachineScope, byoHost *infrav1.ByoHost) (*corev1.Secret, error) {
 	logger := log.FromContext(ctx).WithValues("cluster", machineScope.Cluster.Name)
 	logger.Info("Creating TLS Bootstrap secret")
 
@@ -1107,8 +1107,8 @@ func (r *ByoMachineReconciler) createBootstrapSecretTLSBootstrap(ctx context.Con
 
 		// Get the API server endpoint from ByoHost annotation
 		apiServerEndpoint = "https://127.0.0.1:6443"
-		if machineScope.ByoHost != nil {
-			if endpointIP, ok := machineScope.ByoHost.Annotations[infrav1.EndPointIPAnnotation]; ok && endpointIP != "" {
+		if byoHost != nil {
+			if endpointIP, ok := byoHost.Annotations[infrav1.EndPointIPAnnotation]; ok && endpointIP != "" {
 				apiServerEndpoint = "https://" + endpointIP + ":6443"
 				logger.V(4).Info("Using API server endpoint from ByoHost annotation", "endpoint", apiServerEndpoint)
 			}
@@ -1322,8 +1322,8 @@ func (r *ByoMachineReconciler) createBootstrapSecretTLSBootstrap(ctx context.Con
 		// Get API server endpoint if not already set
 		if apiServerEndpoint == "" {
 			apiServerEndpoint = "https://127.0.0.1:6443"
-			if machineScope.ByoHost != nil {
-				if endpointIP, ok := machineScope.ByoHost.Annotations[infrav1.EndPointIPAnnotation]; ok && endpointIP != "" {
+			if byoHost != nil {
+				if endpointIP, ok := byoHost.Annotations[infrav1.EndPointIPAnnotation]; ok && endpointIP != "" {
 					apiServerEndpoint = "https://" + endpointIP + ":6443"
 				}
 			}
