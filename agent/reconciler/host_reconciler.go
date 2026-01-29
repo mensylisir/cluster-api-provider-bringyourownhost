@@ -815,14 +815,25 @@ func (r *HostReconciler) bootstrapK8sNodeTLS(ctx context.Context, byoHost *infra
 		kubeProxyKubeconfigContent = string(kubeProxyKubeconfig)
 		logger.Info("Using kube-proxy.kubeconfig from TLS bootstrap secret")
 	} else {
-		// Generate default kube-proxy.kubeconfig as fallback using bootstrap token
-		// Get API server endpoint from ByoHost annotations
-		apiServerHost := "https://127.0.0.1:6443" // default
-		if endpointIP, ok := byoHost.Annotations[infrastructurev1beta1.EndPointIPAnnotation]; ok {
-			apiServerHost = fmt.Sprintf("https://%s:6443", endpointIP)
+		// Copy the kubeconfig that was created after CSR approval
+		// This uses certificate-based authentication with the same permissions as kubelet
+		byohConfigPath := registration.GetBYOHConfigPath()
+		if byohConfigPath != "" {
+			if data, err := os.ReadFile(byohConfigPath); err == nil {
+				kubeProxyKubeconfigContent = string(data)
+				logger.Info("Copied kubeconfig from ~/.byoh/config for kube-proxy")
+			}
 		}
-		kubeProxyKubeconfigContent = generateDefaultKubeProxyKubeconfig(caCertData, apiServerHost, bootstrapToken)
-		logger.Info("No kube-proxy.kubeconfig in secret, using default configuration")
+
+		if kubeProxyKubeconfigContent == "" {
+			// Fallback: generate a kubeconfig with bootstrap token
+			apiServerHost := "https://127.0.0.1:6443"
+			if endpointIP, ok := byoHost.Annotations[infrastructurev1beta1.EndPointIPAnnotation]; ok {
+				apiServerHost = fmt.Sprintf("https://%s:6443", endpointIP)
+			}
+			kubeProxyKubeconfigContent = generateDefaultKubeProxyKubeconfig(caCertData, apiServerHost, "", "")
+			logger.Info("No ~/.byoh/config found, using bootstrap token for kube-proxy")
+		}
 	}
 
 	if err := r.FileWriter.WriteToFile(&cloudinit.Files{
@@ -1330,8 +1341,31 @@ func extractTokenFromBootstrapKubeconfig(kubeconfigContent string) string {
 	return ""
 }
 
-// generateDefaultKubeProxyKubeconfig generates a default kube-proxy.kubeconfig
-func generateDefaultKubeProxyKubeconfig(caData, server, token string) string {
+// extractCertAndKeyFromKubeconfig extracts the client certificate and key data from a kubeconfig string
+func extractCertAndKeyFromKubeconfig(kubeconfigContent string) (certData, keyData string) {
+	config, err := clientcmd.Load([]byte(kubeconfigContent))
+	if err != nil {
+		return "", ""
+	}
+
+	for _, authInfo := range config.AuthInfos {
+		if len(authInfo.ClientCertificateData) > 0 {
+			certData = string(authInfo.ClientCertificateData)
+		}
+		if len(authInfo.ClientKeyData) > 0 {
+			keyData = string(authInfo.ClientKeyData)
+		}
+		if certData != "" && keyData != "" {
+			break
+		}
+	}
+
+	return certData, keyData
+}
+
+// generateDefaultKubeProxyKubeconfig generates a default kube-proxy.kubeconfig using certificate-based authentication
+// instead of bootstrap token. This ensures kube-proxy has the same permissions as the host agent.
+func generateDefaultKubeProxyKubeconfig(caData, server, certData, keyData string) string {
 	return fmt.Sprintf(`apiVersion: v1
 kind: Config
 clusters:
@@ -1348,6 +1382,7 @@ current-context: default
 users:
 - name: default
   user:
-    token: %s
-`, caData, server, token)
+    client-certificate-data: %s
+    client-key-data: %s
+`, caData, server, certData, keyData)
 }
