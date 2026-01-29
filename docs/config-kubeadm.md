@@ -161,6 +161,29 @@ kubectl get csr
 kubectl certificate approve <csr-name>
 ```
 
+#### 2.4 Kube-proxy RBAC 权限 (v0.5.83+)
+
+从 v0.5.83 开始，BYOH Agent 需要额外的 RBAC 权限来管理 kube-proxy。需要在集群上部署以下 RBAC 资源：
+
+```bash
+# 部署 kube-proxy RBAC
+kubectl apply -f https://raw.githubusercontent.com/mensylisir/cluster-api-provider-bringyourownhost/v0.5.83/config/rbac/byohost_kube_proxy_clusterrole.yaml
+kubectl apply -f https://raw.githubusercontent.com/mensylisir/cluster-api-provider-bringyourownhost/v0.5.83/config/rbac/byohost_kube_proxy_clusterrolebinding.yaml
+```
+
+**说明：**
+- `byohost-kube-proxy-role`: 授予 nodes 资源的 get、list、watch 权限
+- `byohost-kube-proxy-clusterrole-binding`: 将权限绑定到 `byoh:hosts` 组
+
+**验证 RBAC：**
+```bash
+# 检查 ClusterRoleBinding
+kubectl get clusterrolebinding byohost-kube-proxy-clusterrole-binding -o yaml
+
+# 验证 byoh:hosts 组有节点读取权限
+kubectl auth can-it get nodes --as=system:serviceaccount:default:byoh-hostagent
+```
+
 ### 3. Agent 节点前置要求
 
 在部署 BYOH Agent 之前，需要在每个节点上完成以下准备工作：
@@ -564,4 +587,34 @@ kubectl describe node <node-name>
 # 1. CNI 未安装
 # 2. kubelet 配置错误
 # 3. 证书过期
+```
+
+### 问题 5: 缩容后 Node 对象残留 (v0.5.80+)
+
+**问题描述：** 当 MachineDeployment 缩容时，Node 对象未从集群中删除，导致节点资源残留。
+
+**原因分析：** 在 v0.5.80 之前，`hostCleanUp()` 函数仅在 `K8sComponentsInstallationSucceeded` 条件为 True 时才调用 `resetNodeWithRetry()`。缩容时该条件可能为 False，导致 Node 对象未被删除。
+
+**解决：** 此问题已在 v0.5.80 修复。Agent 现在无论 `K8sComponentsInstallationSucceeded` 状态如何，都会在清理时删除 Node 对象。
+
+**验证缩容是否正常工作：**
+```bash
+# 1. 缩容 MachineDeployment
+kubectl scale machinedeployment my-cluster-workers -n default --replicas=0
+
+# 2. 验证 Node 对象被删除
+kubectl get nodes | grep node10
+
+# 3. 查看 Agent 日志确认 Node 删除
+ssh node10 'journalctl -u byoh-hostagent.service --since "1 minute ago" --no-pager | grep -E "Deleting Node|Successfully deleted"'
+
+# 预期输出：
+# I0105 10:30:45.123456 12345 host_reconciler.go:615] Deleting Node object from API server, node=node10
+# I0105 10:30:45.234567 12345 host_reconciler.go:621] Successfully deleted Node object, node=node10
+```
+
+**如果仍在旧版本遇到此问题：**
+```bash
+# 手动删除残留的 Node 对象
+kubectl delete node <node-name>
 ```
