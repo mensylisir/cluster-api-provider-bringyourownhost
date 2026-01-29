@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -51,8 +52,26 @@ func (p *bootstrapKubeconfigPopulater) populateAPIServer(ctx context.Context, ob
 		}
 	}
 
+	// If no owner reference, try to find Cluster from BootstrapKubeconfig name pattern
+	// Pattern: {clusterName}-{machineDeploymentName}-{random}
 	if clusterName.Name == "" {
-		return fmt.Errorf("failed to find Cluster owner reference for BootstrapKubeconfig %s", obj.Name)
+		// BootstrapKubeconfig name format is typically {clusterName}-{machineDeploymentName}-{suffix}
+		// Try to extract cluster name from the name
+		nameParts := strings.Split(obj.Name, "-")
+		if len(nameParts) >= 1 {
+			// Assume first part is cluster name
+			clusterName = types.NamespacedName{
+				Name:      nameParts[0],
+				Namespace: obj.GetNamespace(),
+			}
+			bootstrapkubeconfiglog.Info("no Cluster owner reference found, inferring from name", "inferredCluster", clusterName.Name, "name", obj.Name)
+		}
+	}
+
+	if clusterName.Name == "" {
+		// Don't fail, just log warning - the ByoMachine controller will handle this case
+		bootstrapkubeconfiglog.Info("could not determine Cluster for BootstrapKubeconfig, skipping APIServer population", "name", obj.Name)
+		return nil
 	}
 
 	// Look up the Cluster
