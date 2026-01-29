@@ -9,9 +9,9 @@ import (
 	"path"
 	"strconv"
 
+	"github.com/mensylisir/cluster-api-provider-bringyourownhost/agent/cloudinit"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/mensylisir/cluster-api-provider-bringyourownhost/agent/cloudinit"
 )
 
 var _ = Describe("FileWriter", func() {

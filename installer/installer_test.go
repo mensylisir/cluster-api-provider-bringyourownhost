@@ -7,9 +7,9 @@ import (
 	"context"
 
 	"github.com/go-logr/logr"
+	"github.com/mensylisir/cluster-api-provider-bringyourownhost/installer"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/mensylisir/cluster-api-provider-bringyourownhost/installer"
 )
 
 var _ = Describe("Byohost Installer Tests", func() {

@@ -230,6 +230,8 @@ func (wh *BootstrapKubeconfigMutatingWebhook) populateFromCluster(ctx context.Co
 	return nil
 }
 
+// +kubebuilder:webhook:path=/mutate-infrastructure-cluster-x-k8s-io-v1beta1-bootstrapkubeconfig,mutating=true,failurePolicy=fail,sideEffects=None,groups=infrastructure.cluster.x-k8s.io,resources=bootstrapkubeconfigs,verbs=create;update,versions=v1beta1,name=mbootstrapkubeconfig.kb.io,admissionReviewVersions=v1
+
 // SetupMutatingWebhookWithManager sets up the mutating webhook with the manager
 func SetupMutatingWebhookWithManager(mgr ctrl.Manager) error {
 	mgr.GetWebhookServer().Register(

@@ -6,9 +6,9 @@ package controllers_test
 import (
 	"context"
 
+	"github.com/mensylisir/cluster-api-provider-bringyourownhost/test/builder"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/mensylisir/cluster-api-provider-bringyourownhost/test/builder"
 	certv1 "k8s.io/api/certificates/v1"
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"

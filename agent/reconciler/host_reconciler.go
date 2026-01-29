@@ -597,23 +597,23 @@ func (r *HostReconciler) resetNode(ctx context.Context, byoHost *infrastructurev
 		}
 	}
 
-		logger.Info("Kubernetes Node reset completed")
+	logger.Info("Kubernetes Node reset completed")
 
-		node := &corev1.Node{}
-		if err := r.Client.Get(ctx, types.NamespacedName{Name: byoHost.Name}, node); err != nil {
-			logger.V(4).Info("Node object not found, skipping deletion", "node", byoHost.Name)
+	node := &corev1.Node{}
+	if err := r.Client.Get(ctx, types.NamespacedName{Name: byoHost.Name}, node); err != nil {
+		logger.V(4).Info("Node object not found, skipping deletion", "node", byoHost.Name)
+	} else {
+		logger.Info("Deleting Node object from API server", "node", byoHost.Name)
+		if err := r.Client.Delete(ctx, node); err != nil {
+			logger.Error(err, "Failed to delete Node object", "node", byoHost.Name)
 		} else {
-			logger.Info("Deleting Node object from API server", "node", byoHost.Name)
-			if err := r.Client.Delete(ctx, node); err != nil {
-				logger.Error(err, "Failed to delete Node object", "node", byoHost.Name)
-			} else {
-				logger.Info("Successfully deleted Node object", "node", byoHost.Name)
-			}
+			logger.Info("Successfully deleted Node object", "node", byoHost.Name)
 		}
-
-		r.Recorder.Event(byoHost, corev1.EventTypeNormal, "ResetK8sNodeSucceeded", "k8s Node Reset completed")
-		return nil
 	}
+
+	r.Recorder.Event(byoHost, corev1.EventTypeNormal, "ResetK8sNodeSucceeded", "k8s Node Reset completed")
+	return nil
+}
 
 // resetNodeWithRetry attempts to reset the node with retry logic
 func (r *HostReconciler) resetNodeWithRetry(ctx context.Context, byoHost *infrastructurev1beta1.ByoHost) error {
@@ -815,7 +815,7 @@ func (r *HostReconciler) bootstrapK8sNodeTLS(ctx context.Context, byoHost *infra
 	} else {
 		// Generate default kube-proxy.kubeconfig as fallback using bootstrap token
 		// Get API server endpoint from ByoHost annotations
-		apiServerHost := "https://127.0.0.1:6443"  // default
+		apiServerHost := "https://127.0.0.1:6443" // default
 		if endpointIP, ok := byoHost.Annotations[infrastructurev1beta1.EndPointIPAnnotation]; ok {
 			apiServerHost = fmt.Sprintf("https://%s:6443", endpointIP)
 		}
@@ -878,9 +878,9 @@ func (r *HostReconciler) bootstrapK8sNodeTLS(ctx context.Context, byoHost *infra
 	// Create critical directories for kubelet
 	// These must exist before kubelet starts to avoid errors
 	criticalDirs := []string{
-		"/etc/kubernetes/manifests",     // For static pod manifests
-		"/var/lib/kubelet/pki",          // For kubelet certificates
-		"/var/lib/kube-proxy",           // For kube-proxy state
+		"/etc/kubernetes/manifests", // For static pod manifests
+		"/var/lib/kubelet/pki",      // For kubelet certificates
+		"/var/lib/kube-proxy",       // For kube-proxy state
 	}
 	for _, dir := range criticalDirs {
 		if err := r.FileWriter.MkdirIfNotExists(dir); err != nil {

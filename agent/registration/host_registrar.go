@@ -13,8 +13,8 @@ import (
 	"strings"
 
 	"github.com/jackpal/gateway"
-	"github.com/pkg/errors"
 	infrastructurev1beta1 "github.com/mensylisir/cluster-api-provider-bringyourownhost/apis/infrastructure/v1beta1"
+	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -81,7 +81,7 @@ func (hr *HostRegistrar) Register(hostName, namespace string, hostLabels map[str
 			klog.Warningf("cleanup after force cleanup failed: %v", err)
 			// Don't return error, continue with registration
 		}
-		
+
 		// Update capacity on existing host if needed
 		// We do this via patch helper in UpdateHost or here?
 		// Since Spec is not typically patched in UpdateHost (which focuses on Status),

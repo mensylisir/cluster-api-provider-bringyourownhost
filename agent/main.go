@@ -15,13 +15,13 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	pflag "github.com/spf13/pflag"
 	"github.com/mensylisir/cluster-api-provider-bringyourownhost/agent/cloudinit"
 	"github.com/mensylisir/cluster-api-provider-bringyourownhost/agent/reconciler"
 	"github.com/mensylisir/cluster-api-provider-bringyourownhost/agent/registration"
 	"github.com/mensylisir/cluster-api-provider-bringyourownhost/agent/version"
 	infrastructurev1beta1 "github.com/mensylisir/cluster-api-provider-bringyourownhost/apis/infrastructure/v1beta1"
 	"github.com/mensylisir/cluster-api-provider-bringyourownhost/feature"
+	pflag "github.com/spf13/pflag"
 
 	certv1 "k8s.io/api/certificates/v1"
 	corev1 "k8s.io/api/core/v1"

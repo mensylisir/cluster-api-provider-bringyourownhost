@@ -7,10 +7,10 @@ import (
 	b64 "encoding/base64"
 	"fmt"
 
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
 	byohv1beta1 "github.com/mensylisir/cluster-api-provider-bringyourownhost/apis/infrastructure/v1beta1"
 	"github.com/mensylisir/cluster-api-provider-bringyourownhost/test/builder"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/cluster-api/util/patch"
