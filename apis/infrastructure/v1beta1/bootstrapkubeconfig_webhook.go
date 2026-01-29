@@ -5,28 +5,84 @@ package v1beta1
 
 import (
 	"context"
+	b64 "encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"net/http"
-	b64 "encoding/base64"
-	"encoding/pem"
 	"net/url"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 )
 
 // log is for logging in this package.
 var bootstrapkubeconfiglog = ctrl.Log.WithName("bootstrapkubeconfig-resource")
 
+// bootstrapKubeconfigWebhookClient is used by the Default() method to populate APIServer
+var bootstrapKubeconfigWebhookClient client.Client
+
 // APIServerURLScheme is the url scheme for the APIServer
 const APIServerURLScheme = "https"
+
+// +kubebuilder:object:generate=false
+type bootstrapKubeconfigPopulater struct{}
+
+func (p *bootstrapKubeconfigPopulater) populateAPIServer(ctx context.Context, obj *BootstrapKubeconfig) error {
+	if obj.Spec.APIServer != "" {
+		return nil
+	}
+
+	// Find the Cluster owner in the ownerReferences
+	var clusterName types.NamespacedName
+	for _, ref := range obj.GetOwnerReferences() {
+		if ref.Kind == "Cluster" {
+			clusterName = types.NamespacedName{
+				Name:      ref.Name,
+				Namespace: obj.GetNamespace(),
+			}
+			break
+		}
+	}
+
+	if clusterName.Name == "" {
+		return fmt.Errorf("failed to find Cluster owner reference for BootstrapKubeconfig %s", obj.Name)
+	}
+
+	// Look up the Cluster
+	cluster := &clusterv1.Cluster{}
+	if err := bootstrapKubeconfigWebhookClient.Get(ctx, clusterName, cluster); err != nil {
+		return fmt.Errorf("failed to get Cluster %s: %w", clusterName, err)
+	}
+
+	// Get the ByoCluster from the Cluster's infrastructure ref
+	if cluster.Spec.InfrastructureRef == nil {
+		return fmt.Errorf("Cluster %s does not have an infrastructure ref", clusterName)
+	}
+
+	// Look up the ByoCluster
+	byoCluster := &ByoCluster{}
+	if err := bootstrapKubeconfigWebhookClient.Get(ctx, types.NamespacedName{
+		Name:      cluster.Spec.InfrastructureRef.Name,
+		Namespace: cluster.Spec.InfrastructureRef.Namespace,
+	}, byoCluster); err != nil {
+		return fmt.Errorf("failed to get ByoCluster %s: %w", cluster.Spec.InfrastructureRef.Name, err)
+	}
+
+	// Populate the APIServer from the controlPlaneEndpoint
+	if byoCluster.Spec.ControlPlaneEndpoint.Host != "" && byoCluster.Spec.ControlPlaneEndpoint.Port != 0 {
+		obj.Spec.APIServer = fmt.Sprintf("https://%s:%d", byoCluster.Spec.ControlPlaneEndpoint.Host, byoCluster.Spec.ControlPlaneEndpoint.Port)
+		bootstrapkubeconfiglog.Info("populated APIServer from cluster in Default()", "apiserver", obj.Spec.APIServer)
+	}
+
+	return nil
+}
 
 func (r *BootstrapKubeconfig) SetupWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).
@@ -38,6 +94,11 @@ var _ webhook.Defaulter = &BootstrapKubeconfig{}
 
 func (r *BootstrapKubeconfig) Default() {
 	bootstrapkubeconfiglog.Info("defaulting bootstrapkubeconfig", "name", r.Name)
+	ctx := context.Background()
+	populater := &bootstrapKubeconfigPopulater{}
+	if err := populater.populateAPIServer(ctx, r); err != nil {
+		bootstrapkubeconfiglog.Error(err, "failed to populate APIServer in Default()", "name", r.Name)
+	}
 }
 
 // +k8s:deepcopy-gen=false
