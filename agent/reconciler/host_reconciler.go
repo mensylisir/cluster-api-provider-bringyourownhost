@@ -696,16 +696,14 @@ func (r *HostReconciler) bootstrapK8sNodeTLS(ctx context.Context, byoHost *infra
 
 	// Write CA certificate
 	var caCertData string
-	var bootstrapToken string
 	if caCrt, ok := secret.Data["ca.crt"]; ok {
 		caCertData = string(caCrt)
 	}
-	// Extract CA and token from bootstrap-kubeconfig
+	// Extract CA from bootstrap-kubeconfig if not already set
 	if bootstrapKubeconfig, ok := secret.Data["bootstrap-kubeconfig"]; ok {
 		if caCertData == "" {
 			caCertData = extractCACertificate(string(bootstrapKubeconfig))
 		}
-		bootstrapToken = extractTokenFromBootstrapKubeconfig(string(bootstrapKubeconfig))
 	}
 
 	if caCertData != "" {
@@ -804,26 +802,53 @@ func (r *HostReconciler) bootstrapK8sNodeTLS(ctx context.Context, byoHost *infra
 	}
 	logger.Info("Wrote kube-proxy config", "path", kubeProxyConfigPath)
 
-	// Write kube-proxy.kubeconfig (always write for TLS Bootstrap mode)
+	// Write kube-proxy.kubeconfig using certificate from ~/.byoh/config
 	kubeProxyKubeconfigPath := "/etc/kubernetes/kube-proxy.kubeconfig"
 	if err := r.FileWriter.MkdirIfNotExists("/etc/kubernetes"); err != nil {
 		return fmt.Errorf("failed to create /etc/kubernetes directory: %w", err)
 	}
 
-	var kubeProxyKubeconfigContent string
-	if kubeProxyKubeconfig, ok := secret.Data["kube-proxy.kubeconfig"]; ok {
-		kubeProxyKubeconfigContent = string(kubeProxyKubeconfig)
-		logger.Info("Using kube-proxy.kubeconfig from TLS bootstrap secret")
-	} else {
-		// Generate default kube-proxy.kubeconfig as fallback using bootstrap token
-		// Get API server endpoint from ByoHost annotations
-		apiServerHost := "https://127.0.0.1:6443" // default
-		if endpointIP, ok := byoHost.Annotations[infrastructurev1beta1.EndPointIPAnnotation]; ok {
-			apiServerHost = fmt.Sprintf("https://%s:6443", endpointIP)
-		}
-		kubeProxyKubeconfigContent = generateDefaultKubeProxyKubeconfig(caCertData, apiServerHost, bootstrapToken)
-		logger.Info("No kube-proxy.kubeconfig in secret, using default configuration")
+	// Read ~/.byoh/config and extract certificate data for kube-proxy
+	byohConfig, err := clientcmd.Load([]byte{})
+	if err != nil {
+		return fmt.Errorf("failed to load byoh config: %w", err)
 	}
+
+	var caData, certData, keyData, server string
+	for _, cluster := range byohConfig.Clusters {
+		if len(cluster.CertificateAuthorityData) > 0 {
+			caData = string(cluster.CertificateAuthorityData)
+		}
+		server = cluster.Server
+	}
+	for _, authInfo := range byohConfig.AuthInfos {
+		if len(authInfo.ClientCertificateData) > 0 {
+			certData = string(authInfo.ClientCertificateData)
+		}
+		if len(authInfo.ClientKeyData) > 0 {
+			keyData = string(authInfo.ClientKeyData)
+		}
+	}
+
+	kubeProxyKubeconfigContent := fmt.Sprintf(`apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    certificate-authority-data: %s
+    server: %s
+  name: default
+contexts:
+- context:
+    cluster: default
+    user: default
+  name: default
+current-context: default
+users:
+- name: default
+  user:
+    client-certificate-data: %s
+    client-key-data: %s
+`, caData, server, certData, keyData)
 
 	if err := r.FileWriter.WriteToFile(&cloudinit.Files{
 		Path:        kubeProxyKubeconfigPath,
@@ -832,7 +857,7 @@ func (r *HostReconciler) bootstrapK8sNodeTLS(ctx context.Context, byoHost *infra
 	}); err != nil {
 		return fmt.Errorf("failed to write kube-proxy kubeconfig: %w", err)
 	}
-	logger.Info("Wrote kube-proxy kubeconfig", "path", kubeProxyKubeconfigPath)
+	logger.Info("Wrote kube-proxy kubeconfig using certificate from ~/.byoh/config", "path", kubeProxyKubeconfigPath)
 
 	// Start kubelet with TLS bootstrap configuration
 	kubeletArgs := []string{
