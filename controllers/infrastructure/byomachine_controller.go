@@ -1098,10 +1098,19 @@ func (r *ByoMachineReconciler) createBootstrapSecretTLSBootstrap(ctx context.Con
 	if caData == nil && bootstrapKubeconfigData == nil {
 		logger.V(4).Info("Generating bootstrap kubeconfig from local cluster for TLS Bootstrap mode")
 
+		// Get the API server endpoint from ByoHost annotation
+		apiServerEndpoint := "https://127.0.0.1:6443"
+		if machineScope.ByoHost != nil {
+			if endpointIP, ok := machineScope.ByoHost.Annotations[infrav1.EndPointIPAnnotation]; ok && endpointIP != "" {
+				apiServerEndpoint = "https://" + endpointIP + ":6443"
+				logger.V(4).Info("Using API server endpoint from ByoHost annotation", "endpoint", apiServerEndpoint)
+			}
+		}
+
 		// Get the in-cluster config to create a bootstrap kubeconfig
 		restConfig, err := clientcmd.DefaultClientConfig.ClientConfig()
 		if err == nil {
-			bootstrapKubeconfigContent, tokenStr, err := generateBootstrapKubeconfigWithToken(ctx, restConfig, r.Client)
+			bootstrapKubeconfigContent, tokenStr, err := generateBootstrapKubeconfigWithToken(ctx, restConfig, r.Client, apiServerEndpoint)
 			if err == nil {
 				logger.Info("Generated bootstrap kubeconfig with new bootstrap token")
 				bootstrapKubeconfigData = []byte(bootstrapKubeconfigContent)
@@ -1439,14 +1448,8 @@ portRange: ""
 `
 }
 
-// generateBootstrapKubeconfig creates a kubeconfig for TLS bootstrap
-func generateBootstrapKubeconfig(ctx context.Context, restConfig *rest.Config, client client.Client) (string, error) {
-	kubeconfig, _, err := generateBootstrapKubeconfigWithToken(ctx, restConfig, client)
-	return kubeconfig, err
-}
-
 // generateBootstrapKubeconfigWithToken creates a kubeconfig and returns the token used
-func generateBootstrapKubeconfigWithToken(ctx context.Context, restConfig *rest.Config, client client.Client) (string, string, error) {
+func generateBootstrapKubeconfigWithToken(ctx context.Context, restConfig *rest.Config, client client.Client, apiServerEndpoint string) (string, string, error) {
 	// Generate a new bootstrap token
 	tokenStr, err := bootstraputil.GenerateBootstrapToken()
 	if err != nil {
@@ -1496,7 +1499,7 @@ users:
 - name: bootstrap
   user:
     token: %s
-`, caData, restConfig.Host, tokenStr)
+`, caData, apiServerEndpoint, tokenStr)
 
 	return kubeconfigYAML, tokenStr, nil
 }
