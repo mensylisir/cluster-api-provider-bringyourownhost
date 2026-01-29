@@ -1339,9 +1339,11 @@ func (r *ByoMachineReconciler) createBootstrapSecretTLSBootstrap(ctx context.Con
 		// Get CA data from in-cluster config or use previously extracted CA
 		var caDataStr string
 		if len(caData) > 0 {
-			// Use CA already extracted from bootstrapKubeconfig
+			// caData is already decoded from bootstrapKubeconfig, just encode it for kubeconfig
 			caDataStr = base64.StdEncoding.EncodeToString(caData)
+			logger.V(4).Info("Using CA extracted from bootstrapKubeconfig", "caDataLen", len(caData))
 		} else {
+			logger.V(4).Info("No CA found in bootstrapKubeconfig, checking in-cluster config")
 			// Try to get CA from in-cluster config
 			restConfig, err := clientcmd.DefaultClientConfig.ClientConfig()
 			if err == nil {
@@ -1604,6 +1606,9 @@ users:
 // extractCAFromKubeconfig extracts CA data from a kubeconfig file
 // Uses proper YAML parsing to extract certificate-authority-data from clusters
 func extractCAFromKubeconfig(kubeconfigData []byte) []byte {
+	logger := log.FromContext(context.Background())
+	logger.V(4).Info("Extracting CA from kubeconfig", "dataLen", len(kubeconfigData))
+
 	// Define a minimal kubeconfig structure for parsing
 	type kubeconfigCluster struct {
 		Cluster struct {
@@ -1617,25 +1622,32 @@ func extractCAFromKubeconfig(kubeconfigData []byte) []byte {
 
 	var config kubeconfig
 	if err := yaml.Unmarshal(kubeconfigData, &config); err != nil {
+		logger.V(4).Info("YAML parsing failed, using simple extraction", "error", err)
 		// Fallback to simple extraction if YAML parsing fails
 		return extractCAFromKubeconfigSimple(kubeconfigData)
 	}
 
+	logger.V(4).Info("YAML parsing succeeded", "numClusters", len(config.Clusters))
+
 	// Look for certificate-authority-data in any cluster
-	for _, cluster := range config.Clusters {
+	for i, cluster := range config.Clusters {
 		if len(cluster.Cluster.CertificateAuthorityData) > 0 {
+			logger.V(4).Info("Found CA in cluster", "index", i, "caDataLen", len(cluster.Cluster.CertificateAuthorityData))
 			return cluster.Cluster.CertificateAuthorityData
 		}
 	}
 
+	logger.V(4).Info("No CA found in kubeconfig")
 	return nil
 }
 
 // extractCAFromKubeconfigSimple provides a simple fallback extraction method
 // for kubeconfig files that may not parse correctly with the structured approach
 func extractCAFromKubeconfigSimple(kubeconfigData []byte) []byte {
+	logger := log.FromContext(context.Background())
 	dataStr := string(kubeconfigData)
 	if !strings.Contains(dataStr, "certificate-authority-data:") {
+		logger.V(4).Info("No certificate-authority-data found in kubeconfig")
 		return nil
 	}
 
@@ -1645,9 +1657,13 @@ func extractCAFromKubeconfigSimple(kubeconfigData []byte) []byte {
 			caBase64 := strings.TrimSpace(lines[i+1])
 			// Remove potential quotes and extra whitespace
 			caBase64 = strings.Trim(caBase64, "\"'\"")
+			logger.V(4).Info("Found certificate-authority-data", "line", i, "caBase64Len", len(caBase64))
 
 			if decoded, err := base64.StdEncoding.DecodeString(caBase64); err == nil {
+				logger.V(4).Info("Successfully decoded CA", "decodedLen", len(decoded))
 				return decoded
+			} else {
+				logger.V(4).Info("Failed to decode CA", "error", err)
 			}
 		}
 	}
