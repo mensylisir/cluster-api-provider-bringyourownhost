@@ -521,45 +521,9 @@ spec:
 kubectl apply -f byomachinetemplate.yaml
 ```
 
-### 步骤 4: 创建 ByoHost (注册节点)
+### 步骤 4: 在节点上启动 Agent
 
-```yaml
-# byohost.yaml
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-kind: ByoHost
-metadata:
-  name: node10
-  namespace: default
-  labels:
-    site: default
-    node-role.kubernetes.io/worker: ""
-spec:
-  # 指定 Bootstrap Secret (可选，如果不指定则使用 ByoMachineTemplate 中的)
-  bootstrapSecret:
-    name: my-cluster-bootstrap
-    namespace: default
-  # 可选：管理 kube-proxy
-  manageKubeProxy: false
-  # 可选：节点标签
-  labels:
-    site: default
-  # 可选：污点
-  taints: []
-  uninstallationScript: |
-    set -euox pipefail
-    systemctl stop kubelet || true
-    systemctl disable kubelet || true
-    rm -rf /etc/kubernetes/pki
-    rm -rf /var/lib/kubelet
-    rm -rf /etc/kubernetes/manifests
-    rm -f /etc/systemd/system/kubelet.service
-```
-
-```bash
-kubectl apply -f byohost.yaml
-```
-
-### 步骤 5: 启动 Agent
+**ByoHost 由 Agent 自动创建**，无需手动创建！
 
 在每个节点上执行：
 
@@ -568,21 +532,13 @@ kubectl apply -f byohost.yaml
 export KUBECONFIG=/etc/kubernetes/admin.conf
 clusterctl get kubeconfig my-cluster > /root/byoh/bootstrap-kubeconfig.conf
 
-# 确保目录存在
-mkdir -p /root/byoh
-
-# 启动 Agent
+# 启动 Agent（自动注册 ByoHost）
 nohup byoh-hostagent \
   --kubeconfig=/root/byoh/bootstrap-kubeconfig.conf \
   > /var/log/byoh-agent.log 2>&1 &
-
-# 验证 Agent 启动
-sleep 5
-ps aux | grep byoh-hostagent
-tail -20 /var/log/byoh-agent.log
 ```
 
-### 步骤 6: 创建 MachineDeployment (扩容节点)
+### 步骤 5: 创建 MachineDeployment (扩容)
 
 ```yaml
 # machinedeployment.yaml
@@ -635,55 +591,141 @@ ssh node10 'tail -50 /var/log/byoh-agent.log'
 
 ## 集群纳管完整流程
 
-### 将现有集群纳入 CAPI 管理
-
-如果希望将已存在的 Kubernetes 集群纳入 Cluster API 管理：
+将现有集群纳入 CAPI 管理，只需创建以下 6 个资源：
 
 ```bash
-# 1. 部署 CAPI 和 BYOH Provider (v0.5.20+)
+# 1. 部署 BYOH Provider
 clusterctl init --infrastructure byoh
 
-# 2. 创建 Cluster 和 ByoCluster
-kubectl apply -f cluster.yaml
-
-# 3. 创建 Bootstrap Secret
-# (使用现有集群的 CA 证书和 token)
-
-# 4. 创建 ByoHost 资源注册所有现有节点
-for node in $(kubectl get nodes -o name | cut -d'/' -f2); do
-  kubectl apply -f - <<EOF
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-kind: ByoHost
-metadata:
-  name: $node
-  namespace: default
-spec:
-  bootstrapSecret:
-    name: my-cluster-bootstrap
-    namespace: default
-EOF
-done
-
-# 5. 在每个节点上启动 Agent
-# (见步骤 5)
+# 2. 创建 Cluster + ByoCluster + MachineDeployment + KubeadmConfigTemplate + ByoMachineTemplate + K8sInstallerConfigTemplate
+kubectl apply -f scale-up-existing-cluster.yaml
 ```
 
-### 重要说明
+**scale-up-existing-cluster.yaml 完整配置：**
 
-**Agent 会自动处理以下工作：**
-- ✅ 创建 `/etc/kubernetes/pki/` 目录并写入 CA 证书
-- ✅ 创建 `/etc/kubernetes/bootstrap-kubeconfig`
-- ✅ 创建 `/var/lib/kubelet/config.yaml` (如果提供了 kubelet-config)
-- ✅ 创建 kubelet systemd service
-- ✅ 启动 kubelet
-- ✅ 处理 TLS Bootstrap CSR
+```yaml
+# Cluster 对象：定义集群网络
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: Cluster
+metadata:
+  name: my-cluster
+  namespace: default
+spec:
+  clusterNetwork:
+    pods:
+      cidrBlocks: ["172.20.0.0/16"]
+    services:
+      cidrBlocks: ["10.68.0.0/16"]
+  infrastructureRef:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    kind: ByoCluster
+    name: my-cluster
+---
+# ByoCluster 对象：指向现有 API Server
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: ByoCluster
+metadata:
+  name: my-cluster
+  namespace: default
+spec:
+  controlPlaneEndpoint:
+    host: "172.30.1.18"  # 控制平面节点 IP
+    port: 6443
+---
+# MachineDeployment 对象：定义 Worker 节点
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: MachineDeployment
+metadata:
+  name: my-cluster-workers
+  namespace: default
+spec:
+  clusterName: my-cluster
+  replicas: 1
+  selector:
+    matchLabels:
+      cluster.x-k8s.io/cluster-name: my-cluster
+  template:
+    spec:
+      clusterName: my-cluster
+      version: v1.34.1
+      bootstrap:
+        dataSecretName: my-cluster-worker-bootstrap
+      infrastructureRef:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: ByoMachineTemplate
+        name: my-cluster-worker-tmpl
+        namespace: default
+---
+# KubeadmConfigTemplate 对象：CAPI 占位符
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+kind: KubeadmConfigTemplate
+metadata:
+  name: my-cluster-worker-config
+  namespace: default
+spec:
+  template:
+    spec:
+      joinConfiguration:
+        nodeRegistration:
+          kubeletExtraArgs:
+            cloud-provider: external
+---
+# ByoMachineTemplate 对象：定义安装模板
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: ByoMachineTemplate
+metadata:
+  name: my-cluster-worker-tmpl
+  namespace: default
+spec:
+  template:
+    spec:
+      joinMode: tlsBootstrap
+      installerRef:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: K8sInstallerConfigTemplate
+        name: my-cluster-worker-installer
+---
+# K8sInstallerConfigTemplate 对象：定义安装包
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: K8sInstallerConfigTemplate
+metadata:
+  name: my-cluster-worker-installer
+  namespace: default
+spec:
+  template:
+    spec:
+      bundleType: k8s
+      bundleRepo: projects.registry.vmware.com/cluster-api-provider-bringyourownhost
+```
 
-**需要用户预先准备的：**
-- ✅ Container Runtime (containerd)
-- ✅ kubelet 二进制文件
-- ✅ Bootstrap Secret (CA 证书 + bootstrap kubeconfig)
-- ✅ RBAC 权限
-- ✅ BYOH Agent 二进制
+### 3. 在节点上启动 Agent
+
+Agent 启动后会自动创建 ByoHost：
+
+```bash
+# 在每个节点上执行
+clusterctl get kubeconfig my-cluster > /root/byoh/bootstrap-kubeconfig.conf
+nohup byoh-hostagent --kubeconfig=/root/byoh/bootstrap-kubeconfig.conf > /var/log/byoh-agent.log 2>&1 &
+```
+
+### 4. 验证节点加入
+
+```bash
+# 查看 Machine 状态
+kubectl get machines -n default
+
+# 查看 ByoHost (自动创建)
+kubectl get byohosts -n default
+
+# 查看节点
+kubectl get nodes
+```
+
+**自动发生的事件：**
+1. Agent 启动 → 自动注册 ByoHost
+2. Controller 分配 ByoHost 给 Machine
+3. Agent 收到 MachineRef → 安装 kubelet → 加入集群
+4. 缩容时：Machine 删除 → Agent 清理 → Node 对象删除
 
 ## Cluster Autoscaler 对接
 
