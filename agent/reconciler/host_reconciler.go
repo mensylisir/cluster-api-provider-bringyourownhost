@@ -565,7 +565,7 @@ func (r *HostReconciler) resetNode(ctx context.Context, byoHost *infrastructurev
 		"/etc/kubernetes/pki/ca.crt",
 		"/var/lib/kubelet/config.yaml",
 		"/etc/kubernetes/kube-proxy.kubeconfig",
-		"/etc/kubernetes/kube-proxy-config.yaml",
+		"/var/lib/kube-proxy/kube-proxy-config.yaml",
 		"/etc/systemd/system/kubelet.service",
 		"/etc/systemd/system/kube-proxy.service",
 	}
@@ -778,7 +778,7 @@ func (r *HostReconciler) bootstrapK8sNodeTLS(ctx context.Context, byoHost *infra
 
 	// Write kube-proxy configuration (always write for TLS Bootstrap mode, even if ManageKubeProxy is false)
 	// This allows the external kube-proxy to use the configuration
-	kubeProxyConfigPath := "/etc/kubernetes/kube-proxy-config.yaml"
+	kubeProxyConfigPath := "/var/lib/kube-proxy/kube-proxy-config.yaml"
 	if err := r.FileWriter.MkdirIfNotExists("/etc/kubernetes"); err != nil {
 		return fmt.Errorf("failed to create /etc/kubernetes directory: %w", err)
 	}
@@ -940,7 +940,7 @@ Wants=network-online.target
 After=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/kube-proxy --config=/etc/kubernetes/kube-proxy-config.yaml
+ExecStart=/usr/local/bin/kube-proxy --config=/var/lib/kube-proxy/kube-proxy-config.yaml
 Restart=always
 StartLimitInterval=0
 RestartSec=10
@@ -1236,7 +1236,7 @@ func (r *HostReconciler) startKubeProxyIfNeeded(ctx context.Context, byoHost *in
 	logger.Info("ManageKubeProxy is true but kube-proxy is not running, starting kube-proxy")
 
 	// Generate default kube-proxy config if it doesn't exist
-	kubeProxyConfigPath := "/etc/kubernetes/kube-proxy-config.yaml"
+	kubeProxyConfigPath := "/var/lib/kube-proxy/kube-proxy-config.yaml"
 	if _, err := os.Stat(kubeProxyConfigPath); os.IsNotExist(err) {
 		logger.Info("kube-proxy config not found, generating default config")
 		if err := r.FileWriter.MkdirIfNotExists("/etc/kubernetes"); err != nil {
@@ -1260,7 +1260,7 @@ Wants=network-online.target
 After=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/kube-proxy --config=/etc/kubernetes/kube-proxy-config.yaml
+ExecStart=/usr/local/bin/kube-proxy --config=/var/lib/kube-proxy/kube-proxy-config.yaml
 Restart=always
 StartLimitInterval=0
 RestartSec=10
