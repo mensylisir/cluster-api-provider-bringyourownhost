@@ -165,7 +165,7 @@ kind: ByoCluster
 metadata:
   name: ${CLUSTER_NAME}
 spec:
-  bundleLookupBaseRegistry: ${BUNDLE_LOOKUP_BASE_REGISTRY}
+  bundleLookupBaseRegistry: docker.io/mensyli/cluster-api-byoh-controller
   controlPlaneEndpoint:
     host: ${CONTROL_PLANE_ENDPOINT_IP}
     port: 6443
