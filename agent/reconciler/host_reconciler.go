@@ -1018,11 +1018,19 @@ func (r *HostReconciler) removeAnnotations(ctx context.Context, byoHost *infrast
 	// Remove the cleanup annotation
 	delete(byoHost.Annotations, infrastructurev1beta1.HostCleanupAnnotation)
 
+	// Remove the cleanup started at annotation
+	delete(byoHost.Annotations, "byoh.infrastructure.cluster.x-k8s.io/cleanup-started-at")
+
+	// Remove the force cleanup annotation
+	delete(byoHost.Annotations, "byoh.infrastructure.cluster.x-k8s.io/force-cleanup")
+
 	// Remove the cluster version annotation
 	delete(byoHost.Annotations, infrastructurev1beta1.K8sVersionAnnotation)
 
 	// Remove the bundle registry annotation
 	delete(byoHost.Annotations, infrastructurev1beta1.BundleLookupBaseRegistryAnnotation)
+
+	logger.Info("Annotations removed")
 }
 
 // patchLocalNodeProviderID patches the ProviderID of the local Node object
