@@ -117,9 +117,11 @@ func (r *BootstrapKubeconfigReconciler) Reconcile(ctx context.Context, req ctrl.
 func (r *BootstrapKubeconfigReconciler) populateFromOriginal(ctx context.Context, bk *infrastructurev1beta1.BootstrapKubeconfig) error {
 	// Find the Machine owner
 	var machineName string
+	var machineNamespace string
 	for _, ref := range bk.GetOwnerReferences() {
 		if ref.Kind == "Machine" {
 			machineName = ref.Name
+			machineNamespace = bk.GetNamespace()
 			break
 		}
 	}
@@ -132,38 +134,49 @@ func (r *BootstrapKubeconfigReconciler) populateFromOriginal(ctx context.Context
 	machine := &clusterv1.Machine{}
 	if err := r.Client.Get(ctx, types.NamespacedName{
 		Name:      machineName,
-		Namespace: bk.GetNamespace(),
+		Namespace: machineNamespace,
 	}, machine); err != nil {
 		return fmt.Errorf("failed to get Machine %s: %w", machineName, err)
 	}
 
-	// Get the original BootstrapKubeconfig from Machine's bootstrap config ref
-	if machine.Spec.Bootstrap.ConfigRef == nil {
-		return fmt.Errorf("Machine %s has no bootstrap config ref", machineName)
+	// Get the Cluster to find the control plane endpoint
+	if machine.Spec.ClusterName == "" {
+		return fmt.Errorf("Machine %s has no cluster name", machineName)
 	}
 
-	originalBK := &infrastructurev1beta1.BootstrapKubeconfig{}
+	cluster := &clusterv1.Cluster{}
 	if err := r.Client.Get(ctx, types.NamespacedName{
-		Name:      machine.Spec.Bootstrap.ConfigRef.Name,
-		Namespace: bk.GetNamespace(),
-	}, originalBK); err != nil {
-		return fmt.Errorf("failed to get original BootstrapKubeconfig %s: %w", machine.Spec.Bootstrap.ConfigRef.Name, err)
+		Name:      machine.Spec.ClusterName,
+		Namespace: machineNamespace,
+	}, cluster); err != nil {
+		return fmt.Errorf("failed to get Cluster %s: %w", machine.Spec.ClusterName, err)
 	}
 
-	// Patch the BootstrapKubeconfig with values from the original
+	// Patch the BootstrapKubeconfig with values from the Cluster
 	helper, err := patch.NewHelper(bk, r.Client)
 	if err != nil {
 		return fmt.Errorf("failed to create patch helper: %w", err)
 	}
 
-	if bk.Spec.APIServer == "" && originalBK.Spec.APIServer != "" {
-		bk.Spec.APIServer = originalBK.Spec.APIServer
-		log.FromContext(ctx).Info("populated APIServer from original BootstrapKubeconfig", "original", originalBK.Name)
+	// Use the control plane endpoint from the Cluster
+	if bk.Spec.APIServer == "" && cluster.Spec.ControlPlaneEndpoint.IsValid() {
+		bk.Spec.APIServer = cluster.Spec.ControlPlaneEndpoint.String()
+		log.FromContext(ctx).Info("populated APIServer from Cluster controlPlaneEndpoint", "endpoint", bk.Spec.APIServer)
 	}
 
-	if bk.Spec.CertificateAuthorityData == "" && originalBK.Spec.CertificateAuthorityData != "" {
-		bk.Spec.CertificateAuthorityData = originalBK.Spec.CertificateAuthorityData
-		log.FromContext(ctx).Info("populated CertificateAuthorityData from original BootstrapKubeconfig", "original", originalBK.Name)
+	// Try to get CA data from the Cluster's kubeconfig secret or use the same approach as before
+	// First try to get from original BootstrapKubeconfig if it exists and has the data
+	if machine.Spec.Bootstrap.ConfigRef != nil && machine.Spec.Bootstrap.ConfigRef.Name != bk.Name {
+		originalBK := &infrastructurev1beta1.BootstrapKubeconfig{}
+		if err := r.Client.Get(ctx, types.NamespacedName{
+			Name:      machine.Spec.Bootstrap.ConfigRef.Name,
+			Namespace: machineNamespace,
+		}, originalBK); err == nil {
+			if bk.Spec.CertificateAuthorityData == "" && originalBK.Spec.CertificateAuthorityData != "" {
+				bk.Spec.CertificateAuthorityData = originalBK.Spec.CertificateAuthorityData
+				log.FromContext(ctx).Info("populated CertificateAuthorityData from original BootstrapKubeconfig", "original", originalBK.Name)
+			}
+		}
 	}
 
 	return helper.Patch(ctx, bk)
