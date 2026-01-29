@@ -1285,9 +1285,12 @@ func (r *ByoMachineReconciler) createBootstrapSecretTLSBootstrap(ctx context.Con
 				tlsBootstrapSecret.Data["kube-proxy-config.yaml"] = []byte(data)
 				logger.Info("Fetched kube-proxy config from target cluster")
 			}
-			// Also fetch kubeconfig for kube-proxy if possible (usually in a secret or same configmap?)
-			// Kubeadm puts kube-proxy.kubeconfig in a ConfigMap "kube-proxy" as well? No, usually it's generated.
-			// But for BYOH, we might need to rely on the bootstrap secret for the kubeconfig part.
+			// Try to get kube-proxy.kubeconfig from the same ConfigMap
+			// Standard kubeadm stores kube-proxy.kubeconfig in the kube-proxy ConfigMap
+			if data, ok := cmProxy.Data["kube-proxy.kubeconfig"]; ok {
+				tlsBootstrapSecret.Data["kube-proxy.kubeconfig"] = []byte(data)
+				logger.Info("Fetched kube-proxy.kubeconfig from target cluster ConfigMap")
+			}
 		} else {
 			// Fallback: Generate default kube-proxy config
 			logger.Info("No kube-proxy ConfigMap found, generating default")
@@ -1319,20 +1322,25 @@ func (r *ByoMachineReconciler) createBootstrapSecretTLSBootstrap(ctx context.Con
 	}
 
 	// Generate kube-proxy.kubeconfig if not already present
-	// Priority: use generated token, or extract from existing bootstrap-kubeconfig
+	// Priority: use existing kube-proxy.kubeconfig from target cluster, then serviceAccount token, then bootstrap token
 	if _, ok := tlsBootstrapSecret.Data["kube-proxy.kubeconfig"]; !ok {
-		var tokenToUse string
-
-		// Priority 1: Use the generated bootstrap token if available
-		if generatedTokenStr != "" {
-			tokenToUse = generatedTokenStr
-		} else if len(bootstrapKubeconfigData) > 0 {
-			// Priority 2: Extract token from existing bootstrap-kubeconfig data
-			tokenToUse = extractTokenFromBootstrapKubeconfig(string(bootstrapKubeconfigData))
+		// Try to get kube-proxy serviceAccount token from target cluster
+		var kubeProxyToken string
+		if remoteClient != nil {
+			proxySASecretList := &corev1.SecretList{}
+			if err := remoteClient.List(ctx, proxySASecretList, client.InNamespace("kube-system"), client.MatchingLabels{
+				"kubernetes.io/service-account.name": "kube-proxy",
+			}); err == nil {
+				for _, s := range proxySASecretList.Items {
+					if s.Type == corev1.SecretTypeServiceAccountToken && s.Data["token"] != nil {
+						kubeProxyToken = string(s.Data["token"])
+						break
+					}
+				}
+			}
 		}
 
 		// Get API server endpoint if not already set
-		// The annotation stores the complete endpoint (IP:Port) from ControlPlaneEndpoint
 		if apiServerEndpoint == "" {
 			if byoHost != nil {
 				if endpoint, ok := byoHost.Annotations[infrav1.EndPointIPAnnotation]; ok && endpoint != "" {
@@ -1345,11 +1353,24 @@ func (r *ByoMachineReconciler) createBootstrapSecretTLSBootstrap(ctx context.Con
 			}
 		}
 
-		// Generate kube-proxy.kubeconfig if we have a token
-		if tokenToUse != "" {
-			kubeProxyKubeconfig := generateKubeProxyKubeconfig(tokenToUse, apiServerEndpoint)
+		// Generate kube-proxy.kubeconfig with serviceAccount token
+		if kubeProxyToken != "" {
+			kubeProxyKubeconfig := generateKubeProxyKubeconfig(kubeProxyToken, apiServerEndpoint)
 			tlsBootstrapSecret.Data["kube-proxy.kubeconfig"] = []byte(kubeProxyKubeconfig)
-			logger.Info("Generated kube-proxy.kubeconfig with bootstrap token")
+			logger.Info("Generated kube-proxy.kubeconfig with kube-proxy serviceAccount token")
+		} else {
+			// Fallback to bootstrap token (limited permissions)
+			var tokenToUse string
+			if generatedTokenStr != "" {
+				tokenToUse = generatedTokenStr
+			} else if len(bootstrapKubeconfigData) > 0 {
+				tokenToUse = extractTokenFromBootstrapKubeconfig(string(bootstrapKubeconfigData))
+			}
+			if tokenToUse != "" {
+				kubeProxyKubeconfig := generateKubeProxyKubeconfig(tokenToUse, apiServerEndpoint)
+				tlsBootstrapSecret.Data["kube-proxy.kubeconfig"] = []byte(kubeProxyKubeconfig)
+				logger.Info("Generated kube-proxy.kubeconfig with bootstrap token (limited permissions)")
+			}
 		}
 	}
 
