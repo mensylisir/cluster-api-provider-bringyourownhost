@@ -40,61 +40,36 @@ func (p *bootstrapKubeconfigPopulater) populateAPIServer(ctx context.Context, ob
 		return nil
 	}
 
-	// Find the Cluster owner in the ownerReferences
-	var clusterName types.NamespacedName
-	for _, ref := range obj.GetOwnerReferences() {
-		if ref.Kind == "Cluster" {
-			clusterName = types.NamespacedName{
-				Name:      ref.Name,
-				Namespace: obj.GetNamespace(),
-			}
-			break
-		}
-	}
-
-	// If no owner reference, assume Cluster is in the same namespace and has the same prefix as the BootstrapKubeconfig
-	// BootstrapKubeconfig name format is typically {clusterName}-{machineDeploymentName}-{suffix}
-	if clusterName.Name == "" {
-		parts := strings.Split(obj.Name, "-")
-		if len(parts) >= 1 {
-			clusterName = types.NamespacedName{
-				Name:      parts[0],
-				Namespace: obj.GetNamespace(),
-			}
-		}
-	}
-
-	if clusterName.Name == "" {
-		// Still can't determine Cluster - this shouldn't happen in normal flow
-		// ByoMachine controller will fall back to using restConfig
-		bootstrapkubeconfiglog.Info("could not determine Cluster name, skipping APIServer population", "name", obj.Name)
+	// BootstrapKubeconfig name format: {clusterName}-{machineDeploymentName}-{suffix}
+	parts := strings.Split(obj.Name, "-")
+	if len(parts) < 1 {
 		return nil
 	}
 
-	// Look up the Cluster
+	clusterName := types.NamespacedName{
+		Name:      parts[0],
+		Namespace: obj.GetNamespace(),
+	}
+
 	cluster := &clusterv1.Cluster{}
 	if err := bootstrapKubeconfigWebhookClient.Get(ctx, clusterName, cluster); err != nil {
-		return fmt.Errorf("failed to get Cluster %s: %w", clusterName, err)
+		return nil
 	}
 
-	// Get the ByoCluster from the Cluster's infrastructure ref
 	if cluster.Spec.InfrastructureRef == nil {
-		return fmt.Errorf("Cluster %s does not have an infrastructure ref", clusterName)
+		return nil
 	}
 
-	// Look up the ByoCluster
 	byoCluster := &ByoCluster{}
 	if err := bootstrapKubeconfigWebhookClient.Get(ctx, types.NamespacedName{
 		Name:      cluster.Spec.InfrastructureRef.Name,
 		Namespace: cluster.Spec.InfrastructureRef.Namespace,
 	}, byoCluster); err != nil {
-		return fmt.Errorf("failed to get ByoCluster %s: %w", cluster.Spec.InfrastructureRef.Name, err)
+		return nil
 	}
 
-	// Populate the APIServer from the controlPlaneEndpoint
 	if byoCluster.Spec.ControlPlaneEndpoint.Host != "" && byoCluster.Spec.ControlPlaneEndpoint.Port != 0 {
 		obj.Spec.APIServer = fmt.Sprintf("https://%s:%d", byoCluster.Spec.ControlPlaneEndpoint.Host, byoCluster.Spec.ControlPlaneEndpoint.Port)
-		bootstrapkubeconfiglog.Info("populated APIServer from cluster in Default()", "apiserver", obj.Spec.APIServer)
 	}
 
 	return nil
