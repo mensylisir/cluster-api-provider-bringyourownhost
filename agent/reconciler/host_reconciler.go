@@ -897,6 +897,8 @@ Description=kubelet: The Kubernetes Node Agent
 Documentation=https://kubernetes.io/docs/home/
 Wants=network-online.target
 After=network-online.target
+After=containerd.service
+Wants=containerd.service
 
 [Service]
 ExecStart=/usr/local/bin/kubelet %s
