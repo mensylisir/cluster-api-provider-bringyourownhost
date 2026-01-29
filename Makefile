@@ -261,7 +261,7 @@ build-cluster-templates: $(RELEASE_DIR) cluster-templates
 	cp $(BYOH_TEMPLATES)/v1beta1/templates/vm/clusterclass-quickstart.yaml $(RELEASE_DIR)/clusterclass-quickstart.yaml
 
 
-build-infra-yaml:kustomize ## Generate infrastructure-components.yaml for the provider
+build-infra-yaml: manifests kustomize ## Generate infrastructure-components.yaml for the provider
 	$(KUSTOMIZE) build config/default | sed -e 's|image: .*/cluster-api-byoh-controller:.*|image: $(IMG)|g' > $(RELEASE_DIR)/infrastructure-components.yaml
 
 build-metadata-yaml:
