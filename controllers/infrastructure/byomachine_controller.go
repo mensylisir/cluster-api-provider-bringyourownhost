@@ -1314,12 +1314,9 @@ func (r *ByoMachineReconciler) createBootstrapSecretTLSBootstrap(ctx context.Con
 
 		// Generate kube-proxy.kubeconfig if we have a token
 		if tokenToUse != "" {
-			restConfig, err := clientcmd.DefaultClientConfig.ClientConfig()
-			if err == nil {
-				kubeProxyKubeconfig := generateKubeProxyKubeconfig(restConfig, tokenToUse)
-				tlsBootstrapSecret.Data["kube-proxy.kubeconfig"] = []byte(kubeProxyKubeconfig)
-				logger.Info("Generated kube-proxy.kubeconfig with bootstrap token")
-			}
+			kubeProxyKubeconfig := generateKubeProxyKubeconfig(tokenToUse, apiServerEndpoint)
+			tlsBootstrapSecret.Data["kube-proxy.kubeconfig"] = []byte(kubeProxyKubeconfig)
+			logger.Info("Generated kube-proxy.kubeconfig with bootstrap token")
 		}
 	}
 
@@ -1505,11 +1502,10 @@ users:
 }
 
 // generateKubeProxyKubeconfig creates a kubeconfig for kube-proxy using the same bootstrap token
-func generateKubeProxyKubeconfig(restConfig *rest.Config, tokenStr string) string {
+func generateKubeProxyKubeconfig(tokenStr, apiServerEndpoint string) string {
 	var caData string
-	if len(restConfig.CAData) > 0 {
-		caData = base64.StdEncoding.EncodeToString(restConfig.CAData)
-	} else if caBytes, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"); err == nil {
+	// Try to read CA from service account token
+	if caBytes, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"); err == nil {
 		caData = base64.StdEncoding.EncodeToString(caBytes)
 	}
 
@@ -1531,7 +1527,7 @@ users:
 - name: default-auth
   user:
     token: %s
-`, caData, restConfig.Host, tokenStr)
+`, caData, apiServerEndpoint, tokenStr)
 }
 
 // extractCAFromKubeconfig extracts CA data from a kubeconfig file
