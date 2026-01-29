@@ -121,7 +121,10 @@ func (r *ByoHostReconciler) Reconcile(ctx context.Context, req ctrl.Request) (_ 
 			logger.Info("Recording cleanup start time", "timeout", cleanupTimeout)
 		}
 
-		// If MachineRef is already cleared or we're forcing cleanup, release the host
+		// If MachineRef is already cleared or we're forcing cleanup, we need to decide:
+		// - If Agent is available and cleanup annotation exists, wait for Agent to process
+		// - If Agent is unavailable (timeout exceeded), force cleanup (delete Node, release host)
+		// Only release the host if we're forcing cleanup OR cleanup annotation is gone
 		if byoHost.Status.MachineRef == nil || shouldForceCleanup {
 			logger.Info("Releasing host (Agent unavailable or cleanup already complete)",
 				"forceCleanup", shouldForceCleanup)
