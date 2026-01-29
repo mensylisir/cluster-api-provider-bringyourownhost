@@ -13,6 +13,11 @@ Kubexm 模式使用二进制 kubelet，通过 TLS Bootstrap 加入集群。Agent
 4. 节点上启动 Agent → 自动创建 ByoHost → 安装 kubelet → 加入集群
 ```
 
+**所有资源自动创建：**
+- BootstrapKubeconfig：由 `BootstrapKubeconfigReconciler` 自动创建
+- Bootstrap Secret：由 `ByoMachineReconciler` 自动创建
+- ByoHost：由 Agent 启动时自动注册
+
 ## 部署步骤
 
 ### 1. 部署 BYOH Provider
@@ -23,8 +28,10 @@ clusterctl init --infrastructure byoh
 
 ### 2. 创建资源文件
 
+**用户只需创建以下 4 个资源，剩余全部自动完成：**
+
 ```yaml
-# scale-up-existing-cluster.yaml
+# kubexm-mode.yaml
 ---
 # Cluster: 定义集群网络
 apiVersion: cluster.x-k8s.io/v1beta1
@@ -70,13 +77,26 @@ spec:
     spec:
       clusterName: my-cluster
       version: v1.34.1
+      # 不需要指定 dataSecretName，CAPI 自动创建
       bootstrap:
-        dataSecretName: my-cluster-workers-bootstrap-kubeconfig
+        configRef:
+          apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+          kind: BootstrapKubeconfigTemplate
+          name: my-cluster-workers-bootstrap-kubeconfig
       infrastructureRef:
         apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
         kind: ByoMachineTemplate
         name: my-cluster-worker-tmpl
-        namespace: default
+---
+# BootstrapKubeconfigTemplate: 自动生成 BootstrapKubeconfig
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: BootstrapKubeconfigTemplate
+metadata:
+  name: my-cluster-workers-bootstrap-kubeconfig
+  namespace: default
+spec:
+  template:
+    spec: {}
 ---
 # ByoMachineTemplate: 定义安装模板
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
@@ -88,10 +108,6 @@ spec:
   template:
     spec:
       joinMode: tlsBootstrap
-      bootstrapConfigRef:
-        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-        kind: BootstrapKubeconfig
-        name: my-cluster-workers-bootstrap-kubeconfig
       installerRef:
         apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
         kind: K8sInstallerConfigTemplate
@@ -113,7 +129,7 @@ spec:
 ### 3. 应用配置
 
 ```bash
-kubectl apply -f scale-up-existing-cluster.yaml
+kubectl apply -f kubexm-mode.yaml
 ```
 
 ### 4. 节点上启动 Agent
@@ -128,13 +144,13 @@ nohup byoh-hostagent --kubeconfig=/root/byoh/bootstrap-kubeconfig.conf > /var/lo
 
 ## 自动发生
 
-| 步骤 | 操作 | 执行者 |
+| 步骤 | 资源 | 创建者 |
 |------|------|--------|
-| 1 | 创建 BootstrapKubeconfig（包含 token） | Controller |
-| 2 | 创建 ByoHost（包含节点信息） | Agent |
-| 3 | 分配 ByoHost 给 Machine | Controller |
-| 4 | 安装 kubelet | Agent |
-| 5 | CSR 批准 | Controller |
+| 1 | BootstrapKubeconfig | BootstrapKubeconfigReconciler (自动生成 token 和 kubeconfig) |
+| 2 | Bootstrap Secret (tls-bootstrap) | ByoMachineReconciler |
+| 3 | ByoHost | Agent 启动时自动注册 |
+| 4 | CSR | Agent |
+| 5 | CSR 批准 | ByoAdmissionReconciler |
 
 ## 节点前置要求
 
@@ -154,8 +170,9 @@ curl -fsSL "https://dl.k8s.io/${K8S_VERSION}/bin/linux/amd64/kubelet" -o /usr/lo
 chmod +x /usr/local/bin/kubelet
 
 # 3. BYOH Agent
+AGENT_VERSION=v0.5.88
 wget -O /usr/local/bin/byoh-hostagent \
-  "https://github.com/mensylisir/cluster-api-provider-bringyourownhost/releases/download/v0.5.86/byoh-hostagent-linux-amd64"
+  "https://github.com/mensylisir/cluster-api-provider-bringyourownhost/releases/download/${AGENT_VERSION}/byoh-hostagent-linux-amd64"
 chmod +x /usr/local/bin/byoh-hostagent
 ```
 
@@ -168,6 +185,9 @@ kubectl get machines -n default
 # 查看 ByoHost（自动创建）
 kubectl get byohosts -n default
 
+# 查看 BootstrapKubeconfig（自动创建）
+kubectl get bootstrapkubeconfig -n default
+
 # 查看节点
 kubectl get nodes
 ```
@@ -176,20 +196,20 @@ kubectl get nodes
 
 ### 问题 1: 缩容后 Node 对象残留
 
-**v0.5.80+ 已修复**。Agent 现在会在清理时自动删除 Node 对象。
+**v0.5.80+ 已修复**。
 
 ```bash
-# 手动删除残留 Node
+# 手动删除
 kubectl delete node <node-name>
 ```
 
 ### 问题 2: kube-proxy 无权限读取 nodes
 
-**v0.5.83+ 已修复**。部署 RBAC：
+**v0.5.83+ 已修复**。
 
 ```bash
-kubectl apply -f https://raw.githubusercontent.com/mensylisir/cluster-api-provider-bringyourownhost/v0.5.86/config/rbac/byohost_kube_proxy_clusterrole.yaml
-kubectl apply -f https://raw.githubusercontent.com/mensylisir/cluster-api-provider-bringyourownhost/v0.5.86/config/rbac/byohost_kube_proxy_clusterrolebinding.yaml
+kubectl apply -f https://raw.githubusercontent.com/mensylisir/cluster-api-provider-bringyourownhost/v0.5.88/config/rbac/byohost_kube_proxy_clusterrole.yaml
+kubectl apply -f https://raw.githubusercontent.com/mensylisir/cluster-api-provider-bringyourownhost/v0.5.88/config/rbac/byohost_kube_proxy_clusterrolebinding.yaml
 ```
 
 ### 问题 3: kubelet CSR 未被批准
@@ -209,7 +229,7 @@ kubectl certificate approve <csr-name>
 clusterctl init --infrastructure byoh
 
 # 2. 创建资源
-kubectl apply -f scale-up-existing-cluster.yaml
+kubectl apply -f kubexm-mode.yaml
 
 # 3. 节点上启动 Agent
 clusterctl get kubeconfig my-cluster > /root/byoh/bootstrap-kubeconfig.conf
