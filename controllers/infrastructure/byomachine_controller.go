@@ -1101,11 +1101,12 @@ func (r *ByoMachineReconciler) createBootstrapSecretTLSBootstrap(ctx context.Con
 	// Only generate if BOTH caData and bootstrapKubeconfigData are nil
 	// This prevents overriding data already obtained from BootstrapKubeconfig in Method 2
 	var generatedTokenStr string
+	var apiServerEndpoint string
 	if caData == nil && bootstrapKubeconfigData == nil {
 		logger.V(4).Info("Generating bootstrap kubeconfig from local cluster for TLS Bootstrap mode")
 
 		// Get the API server endpoint from ByoHost annotation
-		apiServerEndpoint := "https://127.0.0.1:6443"
+		apiServerEndpoint = "https://127.0.0.1:6443"
 		if machineScope.ByoHost != nil {
 			if endpointIP, ok := machineScope.ByoHost.Annotations[infrav1.EndPointIPAnnotation]; ok && endpointIP != "" {
 				apiServerEndpoint = "https://" + endpointIP + ":6443"
@@ -1316,6 +1317,16 @@ func (r *ByoMachineReconciler) createBootstrapSecretTLSBootstrap(ctx context.Con
 		} else if len(bootstrapKubeconfigData) > 0 {
 			// Priority 2: Extract token from existing bootstrap-kubeconfig data
 			tokenToUse = extractTokenFromBootstrapKubeconfig(string(bootstrapKubeconfigData))
+		}
+
+		// Get API server endpoint if not already set
+		if apiServerEndpoint == "" {
+			apiServerEndpoint = "https://127.0.0.1:6443"
+			if machineScope.ByoHost != nil {
+				if endpointIP, ok := machineScope.ByoHost.Annotations[infrav1.EndPointIPAnnotation]; ok && endpointIP != "" {
+					apiServerEndpoint = "https://" + endpointIP + ":6443"
+				}
+			}
 		}
 
 		// Generate kube-proxy.kubeconfig if we have a token
