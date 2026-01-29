@@ -1749,3 +1749,29 @@ func generateProviderID(host *infrav1.ByoHost) string {
 func validateProviderID(providerID, hostName string) (bool, error) {
 	return common.ValidateProviderID(providerID, hostName)
 }
+
+// extractTokenFromBootstrapKubeconfig extracts the bootstrap token from a kubeconfig string
+func extractTokenFromBootstrapKubeconfig(kubeconfigContent string) string {
+	type kubeconfigAuthInfo struct {
+		User struct {
+			Token string `yaml:"token"`
+		} `yaml:"user"`
+	}
+
+	type kubeconfig struct {
+		Users []kubeconfigAuthInfo `yaml:"users"`
+	}
+
+	var config kubeconfig
+	if err := yaml.Unmarshal([]byte(kubeconfigContent), &config); err != nil {
+		return ""
+	}
+
+	for _, user := range config.Users {
+		if len(user.User.Token) > 0 {
+			return user.User.Token
+		}
+	}
+
+	return ""
+}
