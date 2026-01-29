@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/pem"
 	"errors"
 	"flag"
@@ -28,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 	klog "k8s.io/klog/v2"
 	"k8s.io/klog/v2/klogr"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
@@ -285,6 +287,14 @@ func handleBootstrapFlow(logger logr.Logger, hostName string) error {
 	if err != nil {
 		return fmt.Errorf("kubeconfig generation failed: %v", err)
 	}
+
+	// After CSR approval, update kube-proxy.kubeconfig to use certificate-based auth
+	apiServerEndpoint := bootstrapClientConfig.Host
+	if err := updateKubeProxyKubeconfig(logger, apiServerEndpoint); err != nil {
+		logger.Error(err, "failed to update kube-proxy.kubeconfig with certificate-based auth")
+		// Don't fail the bootstrap flow, kube-proxy will use bootstrap token as fallback
+	}
+
 	return nil
 }
 
@@ -334,6 +344,77 @@ func getConfig(logger logr.Logger) *rest.Config {
 		os.Exit(1)
 	}
 	return config
+}
+
+// updateKubeProxyKubeconfig updates the kube-proxy.kubeconfig to use certificate-based
+// authentication from ~/.byoh/config instead of bootstrap token. This gives kube-proxy
+// the same permissions as the host agent (system:nodes group).
+func updateKubeProxyKubeconfig(logger logr.Logger, apiServerEndpoint string) error {
+	byohConfigPath := registration.GetBYOHConfigPath()
+	byohConfigData, err := os.ReadFile(byohConfigPath)
+	if err != nil {
+		return fmt.Errorf("failed to read byoh config: %w", err)
+	}
+
+	// Parse the byoh config to extract certificate data
+	byohConfig, err := clientcmd.Load(byohConfigData)
+	if err != nil {
+		return fmt.Errorf("failed to parse byoh config: %w", err)
+	}
+
+	// Get CA data, certificate data, and key data from the byoh config
+	var caData, certData, keyData string
+	for name, cluster := range byohConfig.Clusters {
+		if len(cluster.CertificateAuthorityData) > 0 {
+			caData = base64.StdEncoding.EncodeToString(cluster.CertificateAuthorityData)
+		}
+		logger.V(4).Info("Found cluster in byoh config", "name", name)
+	}
+
+	for name, authInfo := range byohConfig.AuthInfos {
+		if len(authInfo.ClientCertificateData) > 0 {
+			certData = base64.StdEncoding.EncodeToString(authInfo.ClientCertificateData)
+		}
+		if len(authInfo.ClientKeyData) > 0 {
+			keyData = base64.StdEncoding.EncodeToString(authInfo.ClientKeyData)
+		}
+		logger.V(4).Info("Found auth info in byoh config", "name", name)
+	}
+
+	if certData == "" || keyData == "" {
+		return fmt.Errorf("no certificate data found in byoh config")
+	}
+
+	// Generate kube-proxy.kubeconfig with certificate-based auth
+	kubeProxyKubeconfig := fmt.Sprintf(`apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    certificate-authority-data: %s
+    server: %s
+  name: default-cluster
+contexts:
+- context:
+    cluster: default-cluster
+    namespace: default
+    user: default-auth
+  name: default-context
+current-context: default-context
+users:
+- name: default-auth
+  user:
+    client-certificate-data: %s
+    client-key-data: %s
+`, caData, apiServerEndpoint, certData, keyData)
+
+	// Write to the standard kube-proxy.kubeconfig location
+	kubeProxyPath := "/etc/kubernetes/kube-proxy.kubeconfig"
+	if err := os.WriteFile(kubeProxyPath, []byte(kubeProxyKubeconfig), 0600); err != nil {
+		return fmt.Errorf("failed to write kube-proxy.kubeconfig: %w", err)
+	}
+
+	logger.Info("Updated kube-proxy.kubeconfig with certificate-based auth", "path", kubeProxyPath)
+	return nil
 }
 
 func getClient(logger logr.Logger, config *rest.Config) client.Client {
