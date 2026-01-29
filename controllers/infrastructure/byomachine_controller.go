@@ -1322,34 +1322,9 @@ func (r *ByoMachineReconciler) createBootstrapSecretTLSBootstrap(ctx context.Con
 	}
 
 	// Generate kube-proxy.kubeconfig if not already present
-	// Priority: use existing kube-proxy.kubeconfig from target cluster, then serviceAccount token, then bootstrap token
+	// Use in-cluster CA and certificate from bootstrapKubeconfig to generate proper kubeconfig
 	if _, ok := tlsBootstrapSecret.Data["kube-proxy.kubeconfig"]; !ok {
-		// Try to get kube-proxy serviceAccount token from target cluster
-		var kubeProxyToken string
-		var listErr error
-		if remoteClient != nil {
-			proxySASecretList := &corev1.SecretList{}
-			if listErr = remoteClient.List(ctx, proxySASecretList, client.InNamespace("kube-system"), client.MatchingLabels{
-				"kubernetes.io/service-account.name": "kube-proxy",
-			}); listErr == nil {
-				for _, s := range proxySASecretList.Items {
-					if s.Type == corev1.SecretTypeServiceAccountToken && s.Data["token"] != nil {
-						kubeProxyToken = string(s.Data["token"])
-						logger.Info("Found kube-proxy serviceAccount token", "secret", s.Name)
-						break
-					}
-				}
-				if kubeProxyToken == "" {
-					logger.Info("No kube-proxy serviceAccount token found in cluster", "count", len(proxySASecretList.Items))
-				}
-			} else {
-				logger.V(4).Info("Failed to list kube-proxy serviceAccount secrets", "error", listErr)
-			}
-		} else {
-			logger.V(4).Info("remoteClient is nil, cannot fetch kube-proxy serviceAccount token")
-		}
-
-		// Get API server endpoint if not already set
+		// Get API server endpoint from in-cluster config
 		if apiServerEndpoint == "" {
 			if byoHost != nil {
 				if endpoint, ok := byoHost.Annotations[infrav1.EndPointIPAnnotation]; ok && endpoint != "" {
@@ -1362,13 +1337,36 @@ func (r *ByoMachineReconciler) createBootstrapSecretTLSBootstrap(ctx context.Con
 			}
 		}
 
-		// Generate kube-proxy.kubeconfig with serviceAccount token
-		if kubeProxyToken != "" {
-			kubeProxyKubeconfig := generateKubeProxyKubeconfig(kubeProxyToken, apiServerEndpoint)
+		// Get CA data from in-cluster config or from bootstrapKubeconfig
+		var caData string
+		restConfig, err := clientcmd.DefaultClientConfig.ClientConfig()
+		if err == nil {
+			if restConfig.CAData != nil {
+				caData = base64.StdEncoding.EncodeToString(restConfig.CAData)
+			} else if restConfig.CAFile != "" {
+				if caBytes, err := os.ReadFile(restConfig.CAFile); err == nil {
+					caData = base64.StdEncoding.EncodeToString(caBytes)
+				}
+			}
+		}
+		// Fallback: extract CA from bootstrapKubeconfig
+		if caData == "" && len(bootstrapKubeconfigData) > 0 {
+			caDataBytes := extractCAFromKubeconfig(bootstrapKubeconfigData)
+			if len(caDataBytes) > 0 {
+				caData = base64.StdEncoding.EncodeToString(caDataBytes)
+			}
+		}
+
+		// Get certificate and key from bootstrapKubeconfig
+		certData, keyData := extractCertAndKeyFromKubeconfig(string(bootstrapKubeconfigData))
+
+		if certData != "" && keyData != "" {
+			// Generate kube-proxy.kubeconfig using certificate (full permissions)
+			kubeProxyKubeconfig := generateKubeProxyKubeconfigWithCert(caData, apiServerEndpoint, certData, keyData)
 			tlsBootstrapSecret.Data["kube-proxy.kubeconfig"] = []byte(kubeProxyKubeconfig)
-			logger.Info("Generated kube-proxy.kubeconfig with kube-proxy serviceAccount token")
-		} else {
-			// Fallback to bootstrap token (limited permissions)
+			logger.Info("Generated kube-proxy.kubeconfig with certificate")
+		} else if caData != "" {
+			// Fallback: use bootstrap token
 			var tokenToUse string
 			if generatedTokenStr != "" {
 				tokenToUse = generatedTokenStr
@@ -1845,4 +1843,61 @@ func extractTokenFromBootstrapKubeconfig(kubeconfigContent string) string {
 	}
 
 	return ""
+}
+
+// extractCertAndKeyFromKubeconfig extracts the client certificate and key data from a kubeconfig string
+func extractCertAndKeyFromKubeconfig(kubeconfigContent string) (certData, keyData string) {
+	type kubeconfigAuthInfo struct {
+		User struct {
+			ClientCertificateData string `yaml:"client-certificate-data"`
+			ClientKeyData         string `yaml:"client-key-data"`
+		} `yaml:"user"`
+	}
+
+	type kubeconfig struct {
+		Users []kubeconfigAuthInfo `yaml:"users"`
+	}
+
+	var config kubeconfig
+	if err := yaml.Unmarshal([]byte(kubeconfigContent), &config); err != nil {
+		return "", ""
+	}
+
+	for _, user := range config.Users {
+		if len(user.User.ClientCertificateData) > 0 {
+			certData = user.User.ClientCertificateData
+		}
+		if len(user.User.ClientKeyData) > 0 {
+			keyData = user.User.ClientKeyData
+		}
+		if certData != "" && keyData != "" {
+			return certData, keyData
+		}
+	}
+
+	return "", ""
+}
+
+// generateKubeProxyKubeconfigWithCert generates a kube-proxy.kubeconfig using certificate-based authentication
+func generateKubeProxyKubeconfigWithCert(caData, server, certData, keyData string) string {
+	return fmt.Sprintf(`apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    certificate-authority-data: %s
+    server: %s
+  name: default-cluster
+contexts:
+- context:
+    cluster: default-cluster
+    namespace: default
+    user: default-auth
+  name: default-context
+current-context: default-context
+users:
+- name: default-auth
+  user:
+    client-certificate-data: %s
+    client-key-data: %s
+`, caData, server, certData, keyData)
 }
