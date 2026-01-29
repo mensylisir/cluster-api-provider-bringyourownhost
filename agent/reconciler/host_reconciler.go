@@ -814,7 +814,12 @@ func (r *HostReconciler) bootstrapK8sNodeTLS(ctx context.Context, byoHost *infra
 		logger.Info("Using kube-proxy.kubeconfig from TLS bootstrap secret")
 	} else {
 		// Generate default kube-proxy.kubeconfig as fallback using bootstrap token
-		kubeProxyKubeconfigContent = generateDefaultKubeProxyKubeconfig(caCertData, restConfig.Host, bootstrapToken)
+		// Get API server endpoint from ByoHost annotations
+		apiServerHost := "https://127.0.0.1:6443"  // default
+		if endpointIP, ok := byoHost.Annotations[infrastructurev1beta1.EndPointIPAnnotation]; ok {
+			apiServerHost = fmt.Sprintf("https://%s:6443", endpointIP)
+		}
+		kubeProxyKubeconfigContent = generateDefaultKubeProxyKubeconfig(caCertData, apiServerHost, bootstrapToken)
 		logger.Info("No kube-proxy.kubeconfig in secret, using default configuration")
 	}
 
