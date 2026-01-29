@@ -33,6 +33,8 @@ const (
 
 	// forceCleanupAuditAnnotation is the annotation to track force cleanup operations
 	forceCleanupAuditAnnotation = "byoh.infrastructure.cluster.x-k8s.io/force-cleanup-audit"
+	// cleanupStartedAtAnnotation is the timestamp when cleanup annotation was first detected
+	cleanupStartedAtAnnotation = "byoh.infrastructure.cluster.x-k8s.io/cleanup-started-at"
 )
 
 // ByoHostReconciler reconciles a ByoHost object
@@ -84,19 +86,42 @@ func (r *ByoHostReconciler) Reconcile(ctx context.Context, req ctrl.Request) (_ 
 		cleanupTimeout := r.getCleanupTimeout(byoHost)
 
 		// Check if we should force cleanup (Agent is unavailable)
+		// Force cleanup if:
+		// 1. ByoHost is being deleted and has been for longer than cleanup timeout, OR
+		// 2. Cleanup annotation has been set for longer than cleanup timeout (Agent not processing)
 		shouldForceCleanup := false
+		cleanupStarted := time.Now()
+
 		if !byoHost.DeletionTimestamp.IsZero() {
-			// If ByoHost is being deleted and has been for longer than cleanup timeout,
-			// force cleanup (Agent is likely unavailable)
+			// ByoHost is being deleted
 			deletionDuration := time.Since(byoHost.DeletionTimestamp.Time)
 			if deletionDuration > cleanupTimeout {
 				logger.Info("ByoHost deletion timeout exceeded, forcing cleanup",
 					"timeout", cleanupTimeout, "elapsed", deletionDuration)
 				shouldForceCleanup = true
 			}
+		} else if startedAtStr, ok := byoHost.Annotations[cleanupStartedAtAnnotation]; ok {
+			// Cleanup annotation was set previously, check if timeout exceeded
+			if startedAt, err := time.Parse(time.RFC3339, startedAtStr); err == nil {
+				elapsed := time.Since(startedAt)
+				if elapsed > cleanupTimeout {
+					logger.Info("Cleanup annotation timeout exceeded, forcing cleanup",
+						"timeout", cleanupTimeout, "elapsed", elapsed)
+					shouldForceCleanup = true
+				} else {
+					cleanupStarted = startedAt
+				}
+			}
+		} else {
+			// First time seeing cleanup annotation, record the start time
+			if byoHost.Annotations == nil {
+				byoHost.Annotations = make(map[string]string)
+			}
+			byoHost.Annotations[cleanupStartedAtAnnotation] = time.Now().Format(time.RFC3339)
+			logger.Info("Recording cleanup start time", "timeout", cleanupTimeout)
 		}
 
-		// If MachineRef is already cleared or we're forcing cleanup, just remove the annotation
+		// If MachineRef is already cleared or we're forcing cleanup, release the host
 		if byoHost.Status.MachineRef == nil || shouldForceCleanup {
 			logger.Info("Releasing host (Agent unavailable or cleanup already complete)",
 				"forceCleanup", shouldForceCleanup)
@@ -123,29 +148,26 @@ func (r *ByoHostReconciler) Reconcile(ctx context.Context, req ctrl.Request) (_ 
 
 			// Record force cleanup in audit log
 			if shouldForceCleanup {
-				// Add audit annotation to track force cleanup
-				if byoHost.Annotations == nil {
-					byoHost.Annotations = make(map[string]string)
-				}
-				auditEntry := fmt.Sprintf("timestamp=%s,reason=agent_unavailable,timeout=%v,controller=byohost-controller",
-					time.Now().Format(time.RFC3339), cleanupTimeout)
+				auditEntry := fmt.Sprintf("timestamp=%s,reason=agent_unavailable,timeout=%v,elapsed=%v,controller=byohost-controller",
+					time.Now().Format(time.RFC3339), cleanupTimeout, time.Since(cleanupStarted))
 				byoHost.Annotations[forceCleanupAuditAnnotation] = auditEntry
 				logger.Info("Force cleanup recorded in audit log", "audit", auditEntry)
 			}
 
-			// Remove Annotation
+			// Remove cleanup-related annotations
 			delete(byoHost.Annotations, infrastructurev1beta1.HostCleanupAnnotation)
+			delete(byoHost.Annotations, cleanupStartedAtAnnotation)
 
 			logger.Info("Host released successfully")
 			return ctrl.Result{}, nil
 		}
 
-		// MachineRef exists and we're within timeout - check if Agent is still processing
-		// The Agent will handle cleanup and clear MachineRef
-		// If the annotation persists beyond cleanup timeout, the next reconcile will force cleanup
+		// MachineRef exists and we're within timeout - wait for Agent to process
 		logger.Info("Waiting for Agent to complete cleanup",
 			"machineRef", byoHost.Status.MachineRef.Name,
-			"timeout", cleanupTimeout)
+			"timeout", cleanupTimeout,
+			"elapsed", time.Since(cleanupStarted))
+		return ctrl.Result{RequeueAfter: cleanupTimeout}, nil
 	}
 
 	return ctrl.Result{}, nil
