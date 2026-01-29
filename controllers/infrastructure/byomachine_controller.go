@@ -1326,18 +1326,27 @@ func (r *ByoMachineReconciler) createBootstrapSecretTLSBootstrap(ctx context.Con
 	if _, ok := tlsBootstrapSecret.Data["kube-proxy.kubeconfig"]; !ok {
 		// Try to get kube-proxy serviceAccount token from target cluster
 		var kubeProxyToken string
+		var listErr error
 		if remoteClient != nil {
 			proxySASecretList := &corev1.SecretList{}
-			if err := remoteClient.List(ctx, proxySASecretList, client.InNamespace("kube-system"), client.MatchingLabels{
+			if listErr = remoteClient.List(ctx, proxySASecretList, client.InNamespace("kube-system"), client.MatchingLabels{
 				"kubernetes.io/service-account.name": "kube-proxy",
-			}); err == nil {
+			}); listErr == nil {
 				for _, s := range proxySASecretList.Items {
 					if s.Type == corev1.SecretTypeServiceAccountToken && s.Data["token"] != nil {
 						kubeProxyToken = string(s.Data["token"])
+						logger.Info("Found kube-proxy serviceAccount token", "secret", s.Name)
 						break
 					}
 				}
+				if kubeProxyToken == "" {
+					logger.Info("No kube-proxy serviceAccount token found in cluster", "count", len(proxySASecretList.Items))
+				}
+			} else {
+				logger.V(4).Info("Failed to list kube-proxy serviceAccount secrets", "error", listErr)
 			}
+		} else {
+			logger.V(4).Info("remoteClient is nil, cannot fetch kube-proxy serviceAccount token")
 		}
 
 		// Get API server endpoint if not already set
