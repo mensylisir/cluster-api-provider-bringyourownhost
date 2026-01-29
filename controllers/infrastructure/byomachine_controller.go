@@ -1470,6 +1470,12 @@ func generateBootstrapKubeconfigWithToken(ctx context.Context, restConfig *rest.
 	var caData string
 	if len(restConfig.CAData) > 0 {
 		caData = base64.StdEncoding.EncodeToString(restConfig.CAData)
+	} else {
+		// Try to read CA from in-cluster service account token
+		caPath := "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+		if caBytes, err := os.ReadFile(caPath); err == nil {
+			caData = base64.StdEncoding.EncodeToString(caBytes)
+		}
 	}
 
 	kubeconfigYAML := fmt.Sprintf(`apiVersion: v1
@@ -1499,6 +1505,8 @@ func generateKubeProxyKubeconfig(restConfig *rest.Config, tokenStr string) strin
 	var caData string
 	if len(restConfig.CAData) > 0 {
 		caData = base64.StdEncoding.EncodeToString(restConfig.CAData)
+	} else if caBytes, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"); err == nil {
+		caData = base64.StdEncoding.EncodeToString(caBytes)
 	}
 
 	return fmt.Sprintf(`apiVersion: v1
