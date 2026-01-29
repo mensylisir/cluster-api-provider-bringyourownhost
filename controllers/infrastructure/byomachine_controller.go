@@ -1106,17 +1106,24 @@ func (r *ByoMachineReconciler) createBootstrapSecretTLSBootstrap(ctx context.Con
 	if caData == nil && bootstrapKubeconfigData == nil {
 		logger.V(4).Info("Generating bootstrap kubeconfig from local cluster for TLS Bootstrap mode")
 
-		// Get the API server endpoint from ByoHost annotation
-		// The annotation now stores the complete endpoint (IP:Port) from ControlPlaneEndpoint
-		if byoHost != nil {
-			if endpoint, ok := byoHost.Annotations[infrav1.EndPointIPAnnotation]; ok && endpoint != "" {
-				apiServerEndpoint = "https://" + endpoint
-				logger.V(4).Info("Using API server endpoint from ByoHost annotation", "endpoint", apiServerEndpoint)
+		// Get the API server endpoint from Cluster's ControlPlaneEndpoint
+		if machineScope.Cluster.Spec.ControlPlaneEndpoint.Host != "" {
+			apiServerEndpoint = fmt.Sprintf("https://%s:%d",
+				machineScope.Cluster.Spec.ControlPlaneEndpoint.Host,
+				machineScope.Cluster.Spec.ControlPlaneEndpoint.Port)
+			logger.V(4).Info("Using API server endpoint from Cluster ControlPlaneEndpoint", "endpoint", apiServerEndpoint)
+		} else {
+			// Fallback: get from ByoHost annotation
+			if byoHost != nil {
+				if endpoint, ok := byoHost.Annotations[infrav1.EndPointIPAnnotation]; ok && endpoint != "" {
+					apiServerEndpoint = "https://" + endpoint
+					logger.V(4).Info("Using API server endpoint from ByoHost annotation", "endpoint", apiServerEndpoint)
+				} else {
+					apiServerEndpoint = "https://127.0.0.1:6443"
+				}
 			} else {
 				apiServerEndpoint = "https://127.0.0.1:6443"
 			}
-		} else {
-			apiServerEndpoint = "https://127.0.0.1:6443"
 		}
 
 		// Get the in-cluster config to create a bootstrap kubeconfig
