@@ -5,6 +5,7 @@ package reconciler
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"os/exec"
@@ -817,16 +818,16 @@ func (r *HostReconciler) bootstrapK8sNodeTLS(ctx context.Context, byoHost *infra
 	var caData, certData, keyData, server string
 	for _, cluster := range byohConfig.Clusters {
 		if len(cluster.CertificateAuthorityData) > 0 {
-			caData = string(cluster.CertificateAuthorityData)
+			caData = base64.StdEncoding.EncodeToString(cluster.CertificateAuthorityData)
 		}
 		server = cluster.Server
 	}
 	for _, authInfo := range byohConfig.AuthInfos {
 		if len(authInfo.ClientCertificateData) > 0 {
-			certData = string(authInfo.ClientCertificateData)
+			certData = base64.StdEncoding.EncodeToString(authInfo.ClientCertificateData)
 		}
 		if len(authInfo.ClientKeyData) > 0 {
-			keyData = string(authInfo.ClientKeyData)
+			keyData = base64.StdEncoding.EncodeToString(authInfo.ClientKeyData)
 		}
 	}
 
