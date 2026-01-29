@@ -101,6 +101,23 @@ func (r *ByoHostReconciler) Reconcile(ctx context.Context, req ctrl.Request) (_ 
 			logger.Info("Releasing host (Agent unavailable or cleanup already complete)",
 				"forceCleanup", shouldForceCleanup)
 
+			// If we're forcing cleanup (Agent is unavailable), delete the Node object
+			// to ensure the node is removed from the cluster even without Agent intervention
+			if shouldForceCleanup {
+				node := &corev1.Node{}
+				if err := r.Client.Get(ctx, client.ObjectKey{Name: byoHost.Name}, node); err == nil {
+					logger.Info("Agent unavailable, deleting Node object directly",
+						"node", byoHost.Name)
+					if err := r.Client.Delete(ctx, node); err != nil && !apierrors.IsNotFound(err) {
+						logger.Error(err, "failed to delete Node object during force cleanup",
+							"node", byoHost.Name)
+						return ctrl.Result{}, err
+					}
+					logger.Info("Successfully deleted Node object during force cleanup",
+						"node", byoHost.Name)
+				}
+			}
+
 			// Clear MachineRef if not already cleared
 			byoHost.Status.MachineRef = nil
 
