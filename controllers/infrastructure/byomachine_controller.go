@@ -1444,7 +1444,7 @@ clientConnection:
   acceptContentTypes: ""
   burst: 10
   contentType: application/vnd.kubernetes.protobuf
-  kubeconfig: /var/lib/kube-proxy/kubeconfig.conf
+  kubeconfig: /etc/kubernetes/kube-proxy.kubeconfig
   qps: 5
 clusterCIDR: ""
 configSyncPeriod: 15m0s
