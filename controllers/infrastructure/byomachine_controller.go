@@ -828,7 +828,8 @@ func (r *ByoMachineReconciler) attachByoHost(ctx context.Context, machineScope *
 		if latestHost.Annotations == nil {
 			latestHost.Annotations = make(map[string]string)
 		}
-		latestHost.Annotations[infrav1.EndPointIPAnnotation] = machineScope.Cluster.Spec.ControlPlaneEndpoint.Host
+		// Store the complete ControlPlaneEndpoint (IP:Port) for Agent to use
+		latestHost.Annotations[infrav1.EndPointIPAnnotation] = machineScope.Cluster.Spec.ControlPlaneEndpoint.String()
 		// Safely extract Kubernetes version, handling nil Machine.Spec.Version
 		if machineScope.Machine.Spec.Version != nil {
 			latestHost.Annotations[infrav1.K8sVersionAnnotation] = strings.Split(*machineScope.Machine.Spec.Version, "+")[0]
@@ -1106,12 +1107,16 @@ func (r *ByoMachineReconciler) createBootstrapSecretTLSBootstrap(ctx context.Con
 		logger.V(4).Info("Generating bootstrap kubeconfig from local cluster for TLS Bootstrap mode")
 
 		// Get the API server endpoint from ByoHost annotation
-		apiServerEndpoint = "https://127.0.0.1:6443"
+		// The annotation now stores the complete endpoint (IP:Port) from ControlPlaneEndpoint
 		if byoHost != nil {
-			if endpointIP, ok := byoHost.Annotations[infrav1.EndPointIPAnnotation]; ok && endpointIP != "" {
-				apiServerEndpoint = "https://" + endpointIP + ":6443"
+			if endpoint, ok := byoHost.Annotations[infrav1.EndPointIPAnnotation]; ok && endpoint != "" {
+				apiServerEndpoint = "https://" + endpoint
 				logger.V(4).Info("Using API server endpoint from ByoHost annotation", "endpoint", apiServerEndpoint)
+			} else {
+				apiServerEndpoint = "https://127.0.0.1:6443"
 			}
+		} else {
+			apiServerEndpoint = "https://127.0.0.1:6443"
 		}
 
 		// Get the in-cluster config to create a bootstrap kubeconfig
@@ -1320,12 +1325,16 @@ func (r *ByoMachineReconciler) createBootstrapSecretTLSBootstrap(ctx context.Con
 		}
 
 		// Get API server endpoint if not already set
+		// The annotation stores the complete endpoint (IP:Port) from ControlPlaneEndpoint
 		if apiServerEndpoint == "" {
-			apiServerEndpoint = "https://127.0.0.1:6443"
 			if byoHost != nil {
-				if endpointIP, ok := byoHost.Annotations[infrav1.EndPointIPAnnotation]; ok && endpointIP != "" {
-					apiServerEndpoint = "https://" + endpointIP + ":6443"
+				if endpoint, ok := byoHost.Annotations[infrav1.EndPointIPAnnotation]; ok && endpoint != "" {
+					apiServerEndpoint = "https://" + endpoint
+				} else {
+					apiServerEndpoint = "https://127.0.0.1:6443"
 				}
+			} else {
+				apiServerEndpoint = "https://127.0.0.1:6443"
 			}
 		}
 
