@@ -472,13 +472,15 @@ func (r *HostReconciler) hostCleanUp(ctx context.Context, byoHost *infrastructur
 	logger := ctrl.LoggerFrom(ctx)
 	logger.Info("cleaning up host")
 
+	// Always try to reset and delete the Node when cleanup is triggered
+	// This ensures Node is deleted even if K8sComponentsInstallationSucceeded condition is False
+	logger.Info("resetting node with retry")
+	if err := r.resetNodeWithRetry(ctx, byoHost); err != nil {
+		logger.Error(err, "failed to reset node after multiple attempts, continuing cleanup")
+	}
+
 	k8sComponentsInstallationSucceeded := conditions.Get(byoHost, infrastructurev1beta1.K8sComponentsInstallationSucceeded)
 	if k8sComponentsInstallationSucceeded != nil && k8sComponentsInstallationSucceeded.Status == corev1.ConditionTrue {
-		// Reset the node (kubeadm reset) with retry
-		logger.Info("resetting node with retry")
-		if err := r.resetNodeWithRetry(ctx, byoHost); err != nil {
-			logger.Error(err, "failed to reset node after multiple attempts, continuing cleanup")
-		}
 		if r.SkipK8sInstallation {
 			logger.Info("Skipping uninstallation of k8s components")
 		} else {
