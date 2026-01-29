@@ -1596,6 +1596,53 @@ func extractCAFromCloudInit(script string) []byte {
 	return nil
 }
 
+// extractTokenFromBootstrapKubeconfig extracts the bootstrap token from a kubeconfig string
+func extractTokenFromBootstrapKubeconfig(kubeconfigContent string) string {
+	type kubeconfigAuthInfo struct {
+		User struct {
+			Token string `yaml:"token"`
+		} `yaml:"user"`
+	}
+
+	type kubeconfig struct {
+		Users []kubeconfigAuthInfo `yaml:"users"`
+	}
+
+	var config kubeconfig
+	if err := yaml.Unmarshal([]byte(kubeconfigContent), &config); err != nil {
+		return ""
+	}
+
+	// Look for token in the first user
+	for _, user := range config.Users {
+		if len(user.User.Token) > 0 {
+			return user.User.Token
+		}
+	}
+
+	return ""
+}
+
+	return ""
+}
+	// Pattern 1: echo "<base64>" | base64 -d > /etc/kubernetes/pki/ca.crt
+	patterns := []string{
+		`ca\.crt["']?\s*:\s*["']?([A-Za-z0-9+/=]+)["']?`,
+		`certificate-authority-data["']?\s*:\s*["']?([A-Za-z0-9+/=]+)["']?`,
+	}
+
+	for _, pattern := range patterns {
+		re := regexp.MustCompile(pattern)
+		matches := re.FindStringSubmatch(script)
+		if len(matches) > 1 {
+			if decoded, err := base64.StdEncoding.DecodeString(matches[1]); err == nil {
+				return decoded
+			}
+		}
+	}
+	return nil
+}
+
 // tryAcquireLease attempts to acquire a lease on the given ByoHost
 // Returns true if lease was acquired, false if lease is held by another instance
 func (r *ByoMachineReconciler) tryAcquireLease(ctx context.Context, byoHost *infrav1.ByoHost, machineName string, controllerID string) (bool, error) {
