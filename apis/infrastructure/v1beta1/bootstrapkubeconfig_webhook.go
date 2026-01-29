@@ -52,25 +52,22 @@ func (p *bootstrapKubeconfigPopulater) populateAPIServer(ctx context.Context, ob
 		}
 	}
 
-	// If no owner reference, try to find Cluster from BootstrapKubeconfig name pattern
-	// Pattern: {clusterName}-{machineDeploymentName}-{random}
+	// If no owner reference, assume Cluster is in the same namespace and has the same prefix as the BootstrapKubeconfig
+	// BootstrapKubeconfig name format is typically {clusterName}-{machineDeploymentName}-{suffix}
 	if clusterName.Name == "" {
-		// BootstrapKubeconfig name format is typically {clusterName}-{machineDeploymentName}-{suffix}
-		// Try to extract cluster name from the name
-		nameParts := strings.Split(obj.Name, "-")
-		if len(nameParts) >= 1 {
-			// Assume first part is cluster name
+		parts := strings.Split(obj.Name, "-")
+		if len(parts) >= 1 {
 			clusterName = types.NamespacedName{
-				Name:      nameParts[0],
+				Name:      parts[0],
 				Namespace: obj.GetNamespace(),
 			}
-			bootstrapkubeconfiglog.Info("no Cluster owner reference found, inferring from name", "inferredCluster", clusterName.Name, "name", obj.Name)
 		}
 	}
 
 	if clusterName.Name == "" {
-		// Don't fail, just log warning - the ByoMachine controller will handle this case
-		bootstrapkubeconfiglog.Info("could not determine Cluster for BootstrapKubeconfig, skipping APIServer population", "name", obj.Name)
+		// Still can't determine Cluster - this shouldn't happen in normal flow
+		// ByoMachine controller will fall back to using restConfig
+		bootstrapkubeconfiglog.Info("could not determine Cluster name, skipping APIServer population", "name", obj.Name)
 		return nil
 	}
 
