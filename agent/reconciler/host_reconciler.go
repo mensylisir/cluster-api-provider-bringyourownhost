@@ -940,7 +940,7 @@ Wants=network-online.target
 After=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/kube-proxy --config=/etc/kubernetes/kube-proxy-config.yaml
+ExecStart=/usr/local/bin/kube-proxy --config=/var/lib/kube-proxy/kube-proxy-config.yaml
 Restart=always
 StartLimitInterval=0
 RestartSec=10
@@ -1260,7 +1260,7 @@ Wants=network-online.target
 After=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/kube-proxy --config=/etc/kubernetes/kube-proxy-config.yaml
+ExecStart=/usr/local/bin/kube-proxy --config=/var/lib/kube-proxy/kube-proxy-config.yaml
 Restart=always
 StartLimitInterval=0
 RestartSec=10
