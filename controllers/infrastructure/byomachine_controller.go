@@ -1289,13 +1289,27 @@ func (r *ByoMachineReconciler) createBootstrapSecretTLSBootstrap(ctx context.Con
 		}
 	}
 
-	// Generate kube-proxy.kubeconfig if we have a generated token and no existing kube-proxy.kubeconfig
-	if _, ok := tlsBootstrapSecret.Data["kube-proxy.kubeconfig"]; !ok && generatedTokenStr != "" {
-		restConfig, err := clientcmd.DefaultClientConfig.ClientConfig()
-		if err == nil {
-			kubeProxyKubeconfig := generateKubeProxyKubeconfig(restConfig, generatedTokenStr)
-			tlsBootstrapSecret.Data["kube-proxy.kubeconfig"] = []byte(kubeProxyKubeconfig)
-			logger.Info("Generated kube-proxy.kubeconfig with bootstrap token")
+	// Generate kube-proxy.kubeconfig if not already present
+	// Priority: use generated token, or extract from existing bootstrap-kubeconfig
+	if _, ok := tlsBootstrapSecret.Data["kube-proxy.kubeconfig"]; !ok {
+		var tokenToUse string
+
+		// Priority 1: Use the generated bootstrap token if available
+		if generatedTokenStr != "" {
+			tokenToUse = generatedTokenStr
+		} else if len(bootstrapKubeconfigData) > 0 {
+			// Priority 2: Extract token from existing bootstrap-kubeconfig data
+			tokenToUse = extractTokenFromBootstrapKubeconfig(string(bootstrapKubeconfigData))
+		}
+
+		// Generate kube-proxy.kubeconfig if we have a token
+		if tokenToUse != "" {
+			restConfig, err := clientcmd.DefaultClientConfig.ClientConfig()
+			if err == nil {
+				kubeProxyKubeconfig := generateKubeProxyKubeconfig(restConfig, tokenToUse)
+				tlsBootstrapSecret.Data["kube-proxy.kubeconfig"] = []byte(kubeProxyKubeconfig)
+				logger.Info("Generated kube-proxy.kubeconfig with bootstrap token")
+			}
 		}
 	}
 
