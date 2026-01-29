@@ -1335,27 +1335,26 @@ func (r *ByoMachineReconciler) createBootstrapSecretTLSBootstrap(ctx context.Con
 			}
 		}
 
-		// Get CA data from in-cluster config
-		var caData string
-		restConfig, err := clientcmd.DefaultClientConfig.ClientConfig()
-		if err == nil {
-			if restConfig.CAData != nil {
-				caData = base64.StdEncoding.EncodeToString(restConfig.CAData)
-			} else if restConfig.CAFile != "" {
-				if caBytes, err := os.ReadFile(restConfig.CAFile); err == nil {
-					caData = base64.StdEncoding.EncodeToString(caBytes)
+		// Get CA data from in-cluster config or use previously extracted CA
+		var caDataStr string
+		if len(caData) > 0 {
+			// Use CA already extracted from bootstrapKubeconfig
+			caDataStr = base64.StdEncoding.EncodeToString(caData)
+		} else {
+			// Try to get CA from in-cluster config
+			restConfig, err := clientcmd.DefaultClientConfig.ClientConfig()
+			if err == nil {
+				if restConfig.CAData != nil {
+					caDataStr = base64.StdEncoding.EncodeToString(restConfig.CAData)
+				} else if restConfig.CAFile != "" {
+					if caBytes, err := os.ReadFile(restConfig.CAFile); err == nil {
+						caDataStr = base64.StdEncoding.EncodeToString(caBytes)
+					}
 				}
 			}
 		}
-		// Fallback: extract CA from bootstrapKubeconfig
-		if caData == "" && len(bootstrapKubeconfigData) > 0 {
-			caDataBytes := extractCAFromKubeconfig(bootstrapKubeconfigData)
-			if len(caDataBytes) > 0 {
-				caData = base64.StdEncoding.EncodeToString(caDataBytes)
-			}
-		}
 
-		if caData != "" {
+		if caDataStr != "" {
 			// Generate kube-proxy.kubeconfig using file references to kubelet certificates
 			// This uses the same certificate as kubelet (which has system:nodes group permissions)
 			kubeProxyKubeconfig := fmt.Sprintf(`apiVersion: v1
@@ -1377,7 +1376,7 @@ users:
   user:
     client-certificate: /var/lib/kubelet/pki/kubelet-client-current.pem
     client-key: /var/lib/kubelet/pki/kubelet-client-current.pem
-`, caData, apiServerEndpoint)
+ `, caDataStr, apiServerEndpoint)
 			tlsBootstrapSecret.Data["kube-proxy.kubeconfig"] = []byte(kubeProxyKubeconfig)
 			logger.Info("Generated kube-proxy.kubeconfig referencing kubelet certificate")
 		} else if len(bootstrapKubeconfigData) > 0 {
