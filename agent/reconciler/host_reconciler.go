@@ -746,22 +746,30 @@ func (r *HostReconciler) bootstrapK8sNodeTLS(ctx context.Context, byoHost *infra
 		logger.Info("Wrote bootstrap kubeconfig", "path", bootstrapKubeconfigPath)
 	}
 
-	// Write kubelet configuration if provided
-	if kubeletConfig, ok := secret.Data["kubelet-config.yaml"]; ok {
-		kubeletConfigPath := "/var/lib/kubelet/config.yaml"
-		// Create parent directory if it doesn't exist
-		if err := r.FileWriter.MkdirIfNotExists("/var/lib/kubelet"); err != nil {
-			return fmt.Errorf("failed to create /var/lib/kubelet directory: %w", err)
-		}
-		if err := r.FileWriter.WriteToFile(&cloudinit.Files{
-			Path:        kubeletConfigPath,
-			Content:     string(kubeletConfig),
-			Permissions: "0644",
-		}); err != nil {
-			return fmt.Errorf("failed to write kubelet config: %w", err)
-		}
-		logger.Info("Wrote kubelet config", "path", kubeletConfigPath)
+	// Write kubelet configuration if provided, otherwise generate a default
+	kubeletConfigPath := "/var/lib/kubelet/config.yaml"
+	if err := r.FileWriter.MkdirIfNotExists("/var/lib/kubelet"); err != nil {
+		return fmt.Errorf("failed to create /var/lib/kubelet directory: %w", err)
 	}
+
+	var kubeletConfigContent string
+	if kubeletConfig, ok := secret.Data["kubelet-config.yaml"]; ok {
+		kubeletConfigContent = string(kubeletConfig)
+		logger.Info("Using kubelet config from TLS bootstrap secret")
+	} else {
+		// Generate default kubelet configuration as fallback
+		kubeletConfigContent = generateDefaultKubeletConfig()
+		logger.Info("No kubelet config in secret, using default configuration")
+	}
+
+	if err := r.FileWriter.WriteToFile(&cloudinit.Files{
+		Path:        kubeletConfigPath,
+		Content:     kubeletConfigContent,
+		Permissions: "0644",
+	}); err != nil {
+		return fmt.Errorf("failed to write kubelet config: %w", err)
+	}
+	logger.Info("Wrote kubelet config", "path", kubeletConfigPath)
 
 	// Write kube-proxy configuration (always write for TLS Bootstrap mode, even if ManageKubeProxy is false)
 	// This allows the external kube-proxy to use the configuration
@@ -1079,6 +1087,54 @@ func (r *HostReconciler) preflightChecks(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// generateDefaultKubeletConfig generates a default KubeletConfiguration
+// For TLS Bootstrap mode when no kubelet-config is provided in the secret,
+// generate a minimal working config that works for most clusters
+func generateDefaultKubeletConfig() string {
+	return fmt.Sprintf(`apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+authentication:
+  anonymous:
+    enabled: false
+  webhook:
+    cacheTTL: 2m0s
+    enabled: true
+  x509:
+    clientCAFile: /etc/kubernetes/pki/ca.crt
+authorization:
+  mode: Webhook
+  webhook:
+    cacheAuthorizedTTL: 5m0s
+    cacheUnauthorizedTTL: 30s
+cgroupDriver: systemd
+clusterDNS:
+- 169.254.20.10
+clusterDomain: cluster.local
+containerLogMaxFiles: 5
+containerLogMaxSize: 10Mi
+evictionHard:
+  imagefs.available: 15%%
+  memory.available: 100Mi
+  nodefs.available: 10%%
+  nodefs.inodesFree: 5%%
+evictionPressureTransitionPeriod: 5m0s
+fileCheckFrequency: 40s
+healthzBindAddress: 127.0.0.1
+healthzPort: 10248
+imageGCHighThresholdPercent: 85
+imageGCLowThresholdPercent: 80
+logging:
+  verbosity: 0
+nodeStatusUpdateFrequency: 10s
+rotateCertificates: true
+runtimeRequestTimeout: 2m0s
+staticPodPath: /etc/kubernetes/manifests
+streamingConnectionIdleTimeout: 4h0m0s
+syncFrequency: 1m0s
+volumeStatsAggPeriod: 1m0s
+`)
 }
 
 // generateDefaultKubeProxyConfig generates a default KubeProxyConfiguration
