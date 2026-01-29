@@ -4,9 +4,9 @@
 
 | 组件 | 自动处理 | 说明 |
 |------|----------|------|
-| **Bootstrap Secret** | ✅ 自动 | Controller 自动生成 CA 和 bootstrap kubeconfig |
-| **Bootstrap Token** | ✅ 自动 | 如果配置了 `bootstrapConfigRef`，会自动创建 |
-| **CSR 批准** | ✅ 自动 | ByoAdmissionReconciler 自动批准 CSR |
+| **ByoHost** | ✅ 自动 | Agent 启动时自动创建 |
+| **BootstrapKubeconfig** | ✅ 自动 | Controller 自动生成，包含 token |
+| **CSR 批准** | ✅ 自动 | ByoAdmissionReconciler 自动批准 |
 | **RBAC 权限** | ✅ 自动 | 部署 BYOH Provider 时自动创建 |
 
 ## 只需要手动处理 ⚠️
@@ -14,8 +14,9 @@
 | 步骤 | 操作 | 说明 |
 |------|------|------|
 | 1 | 部署 BYOH Provider | `clusterctl init --infrastructure byoh` |
-| 2 | 创建 MachineDeployment | 使用 `joinMode: tlsBootstrap` |
-| 3 | 部署 Agent | 在节点上启动 byoh-agent |
+| 2 | 创建 4 个资源 | Cluster, ByoCluster, ByoMachineTemplate, K8sInstallerConfigTemplate |
+| 3 | 创建 MachineDeployment | 指定 replicas 扩容节点 |
+| 4 | 部署 Agent | 在节点上启动 byoh-hostagent |
 
 ---
 
@@ -649,26 +650,12 @@ spec:
       clusterName: my-cluster
       version: v1.34.1
       bootstrap:
-        dataSecretName: my-cluster-worker-bootstrap
+        dataSecretName: my-cluster-workers-bootstrap-kubeconfig
       infrastructureRef:
         apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
         kind: ByoMachineTemplate
         name: my-cluster-worker-tmpl
         namespace: default
----
-# KubeadmConfigTemplate 对象：CAPI 占位符
-apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
-kind: KubeadmConfigTemplate
-metadata:
-  name: my-cluster-worker-config
-  namespace: default
-spec:
-  template:
-    spec:
-      joinConfiguration:
-        nodeRegistration:
-          kubeletExtraArgs:
-            cloud-provider: external
 ---
 # ByoMachineTemplate 对象：定义安装模板
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
@@ -680,10 +667,15 @@ spec:
   template:
     spec:
       joinMode: tlsBootstrap
+      bootstrapConfigRef:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: BootstrapKubeconfig
+        name: my-cluster-workers-bootstrap-kubeconfig
       installerRef:
         apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
         kind: K8sInstallerConfigTemplate
         name: my-cluster-worker-installer
+        namespace: default
 ---
 # K8sInstallerConfigTemplate 对象：定义安装包
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
