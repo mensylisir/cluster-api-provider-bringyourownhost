@@ -85,10 +85,14 @@ func (r *BootstrapKubeconfigReconciler) Reconcile(ctx context.Context, req ctrl.
 		return ctrl.Result{}, err
 	}
 
+	if bootstrapKubeconfig.Spec.APIServer == "" {
+    	bootstrapKubeconfig.Spec.APIServer = bootstrapKubeconfig.Status.Initialization.ControlPlaneEndpoint
+	}
 	bootstrapKubeconfigData, err := bootstraptoken.GenerateBootstrapKubeconfigFromBootstrapToken(tokenStr, bootstrapKubeconfig)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	bootstrapKubeconfigData.Clusters[infrastructurev1beta1.DefaultClusterName].Server = bootstrapKubeconfig.Spec.APIServer
 
 	caData := bootstrapKubeconfigData.Clusters[infrastructurev1beta1.DefaultClusterName].CertificateAuthorityData
 	decodedCAData, err := b64.StdEncoding.DecodeString(string(caData))

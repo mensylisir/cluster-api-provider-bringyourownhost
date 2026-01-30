@@ -497,12 +497,12 @@ func (r *HostReconciler) hostCleanUp(ctx context.Context, byoHost *infrastructur
 					logger.Error(err, "error parsing Uninstallation script")
 					return err
 				}
-				err = r.CmdRunner.RunCmd(ctx, uninstallScript)
-				if err != nil {
-					logger.Error(err, "error executing Uninstallation script")
-					r.Recorder.Event(byoHost, corev1.EventTypeWarning, "UninstallScriptExecutionFailed", "uninstall script execution failed")
-					return err
-				}
+				// err = r.CmdRunner.RunCmd(ctx, uninstallScript)
+				// if err != nil {
+				// 	logger.Error(err, "error executing Uninstallation script")
+				// 	r.Recorder.Event(byoHost, corev1.EventTypeWarning, "UninstallScriptExecutionFailed", "uninstall script execution failed")
+				// 	return err
+				// }
 			}
 		}
 		conditions.MarkFalse(byoHost, infrastructurev1beta1.K8sComponentsInstallationSucceeded, infrastructurev1beta1.K8sNodeAbsentReason, clusterv1.ConditionSeverityInfo, "")
@@ -589,9 +589,9 @@ func (r *HostReconciler) resetNode(ctx context.Context, byoHost *infrastructurev
 		"/var/lib/etcd",
 		"/etc/kubernetes",
 		"/run/kubernetes",
-		"/var/lib/cni",
-		"/etc/cni",
-		"/opt/cni",
+		//"/var/lib/cni",
+		//"/etc/cni",
+		//"/opt/cni",
 	}
 
 	for _, d := range dirsToRemove {
