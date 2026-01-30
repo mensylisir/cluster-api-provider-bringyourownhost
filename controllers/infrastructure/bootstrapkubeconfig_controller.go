@@ -172,8 +172,7 @@ func (r *BootstrapKubeconfigReconciler) populateFromOriginal(ctx context.Context
 		log.FromContext(ctx).Info("populated APIServer from Cluster controlPlaneEndpoint", "endpoint", bk.Spec.APIServer)
 	}
 
-	// Try to get CA data from the Cluster's kubeconfig secret or use the same approach as before
-	// First try to get from original BootstrapKubeconfig if it exists and has the data
+	// Try to get CA data and APIServer from the original BootstrapKubeconfig
 	if machine.Spec.Bootstrap.ConfigRef != nil && machine.Spec.Bootstrap.ConfigRef.Name != bk.Name {
 		originalBK := &infrastructurev1beta1.BootstrapKubeconfig{}
 		if err := r.Client.Get(ctx, types.NamespacedName{
@@ -183,6 +182,10 @@ func (r *BootstrapKubeconfigReconciler) populateFromOriginal(ctx context.Context
 			if bk.Spec.CertificateAuthorityData == "" && originalBK.Spec.CertificateAuthorityData != "" {
 				bk.Spec.CertificateAuthorityData = originalBK.Spec.CertificateAuthorityData
 				log.FromContext(ctx).Info("populated CertificateAuthorityData from original BootstrapKubeconfig", "original", originalBK.Name)
+			}
+			if bk.Spec.APIServer == "" && originalBK.Spec.APIServer != "" {
+				bk.Spec.APIServer = originalBK.Spec.APIServer
+				log.FromContext(ctx).Info("populated APIServer from original BootstrapKubeconfig", "original", originalBK.Name)
 			}
 		}
 	}
