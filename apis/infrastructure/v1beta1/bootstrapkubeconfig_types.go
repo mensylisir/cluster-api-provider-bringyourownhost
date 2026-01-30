@@ -47,6 +47,21 @@ type BootstrapKubeconfigStatus struct {
 	// for starting the host registration process
 	// +optional
 	BootstrapKubeconfigData *string `json:"bootstrapKubeconfigData,omitempty"`
+
+	// DataSecretName is the name of the secret that stores the bootstrap data.
+	// +optional
+	DataSecretName string `json:"dataSecretName,omitempty"`
+
+	// Initialization encapsulates the initialization process for the bootstrap data.
+	// +optional
+	Initialization BootstrapConfigInitializationStatus `json:"initialization,omitempty"`
+}
+
+// BootstrapConfigInitializationStatus provides observations of the BootstrapConfig initialization process.
+type BootstrapConfigInitializationStatus struct {
+	// DataSecretCreated is true when the bootstrap data secret is created.
+	// +optional
+	DataSecretCreated *bool `json:"dataSecretCreated,omitempty"`
 }
 
 //+kubebuilder:object:root=true

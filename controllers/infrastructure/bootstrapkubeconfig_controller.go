@@ -110,6 +110,13 @@ func (r *BootstrapKubeconfigReconciler) Reconcile(ctx context.Context, req ctrl.
 	bootstrapKubeconfigDataStr := string(runtimeEncodedBootstrapKubeConfig)
 	bootstrapKubeconfig.Status.BootstrapKubeconfigData = &bootstrapKubeconfigDataStr
 
+	// Set DataSecretName for CAPI Machine controller compatibility
+	bootstrapKubeconfig.Status.DataSecretName = bootstrapKubeconfigSecret.Name
+
+	// Set DataSecretCreated to true for CAPI Machine controller compatibility
+	trueVal := true
+	bootstrapKubeconfig.Status.Initialization.DataSecretCreated = &trueVal
+
 	return ctrl.Result{}, helper.Patch(ctx, bootstrapKubeconfig)
 }
 
