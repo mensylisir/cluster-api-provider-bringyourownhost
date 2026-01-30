@@ -898,11 +898,6 @@ users:
 		logger.Info("Adding node taints", "taints", byoHost.Spec.Taints)
 	}
 
-	// Add cluster DNS configuration from annotations if available
-	if endpointIP, ok := byoHost.Annotations[infrastructurev1beta1.EndPointIPAnnotation]; ok {
-		kubeletArgs = append(kubeletArgs, fmt.Sprintf("--cluster-dns=%s", endpointIP))
-	}
-
 	// Create critical directories for kubelet
 	// These must exist before kubelet starts to avoid errors
 	criticalDirs := []string{
