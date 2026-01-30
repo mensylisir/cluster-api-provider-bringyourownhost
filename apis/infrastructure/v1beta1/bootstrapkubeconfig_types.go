@@ -47,6 +47,19 @@ type BootstrapKubeconfigStatus struct {
 	// for starting the host registration process
 	// +optional
 	BootstrapKubeconfigData *string `json:"bootstrapKubeconfigData,omitempty"`
+
+	// Initialization encapsulates the initialization process for the bootstrap data.
+	// This is used by CAPI to track when bootstrap data is ready.
+	// +optional
+	Initialization BootstrapConfigInitializationStatus `json:"initialization,omitempty"`
+}
+
+// BootstrapConfigInitializationStatus provides observations of the BootstrapConfig initialization process.
+type BootstrapConfigInitializationStatus struct {
+	// DataSecretCreated is true when the bootstrap data secret is created.
+	// This is required for CAPI Machine controller to recognize bootstrap as complete.
+	// +optional
+	DataSecretCreated *bool `json:"dataSecretCreated,omitempty"`
 }
 
 //+kubebuilder:object:root=true

@@ -64,8 +64,18 @@ func (r *BootstrapKubeconfigReconciler) Reconcile(ctx context.Context, req ctrl.
 	}
 
 	// There already is bootstrap-kubeconfig data associated with this object
-	// Do not create secrets again
+	// Do not create secrets again, but ensure DataSecretCreated is set for CAPI compatibility
 	if bootstrapKubeconfig.Status.BootstrapKubeconfigData != nil {
+		// Set DataSecretCreated to true for CAPI Machine controller compatibility
+		trueVal := true
+		if bootstrapKubeconfig.Status.Initialization.DataSecretCreated == nil || !*bootstrapKubeconfig.Status.Initialization.DataSecretCreated {
+			helper, err := patch.NewHelper(bootstrapKubeconfig, r.Client)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			bootstrapKubeconfig.Status.Initialization.DataSecretCreated = &trueVal
+			return ctrl.Result{}, helper.Patch(ctx, bootstrapKubeconfig)
+		}
 		return ctrl.Result{}, nil
 	}
 
@@ -109,6 +119,10 @@ func (r *BootstrapKubeconfigReconciler) Reconcile(ctx context.Context, req ctrl.
 
 	bootstrapKubeconfigDataStr := string(runtimeEncodedBootstrapKubeConfig)
 	bootstrapKubeconfig.Status.BootstrapKubeconfigData = &bootstrapKubeconfigDataStr
+
+	// Set DataSecretCreated to true for CAPI Machine controller compatibility
+	trueVal := true
+	bootstrapKubeconfig.Status.Initialization.DataSecretCreated = &trueVal
 
 	return ctrl.Result{}, helper.Patch(ctx, bootstrapKubeconfig)
 }
