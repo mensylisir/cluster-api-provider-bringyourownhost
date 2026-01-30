@@ -85,9 +85,6 @@ func (r *BootstrapKubeconfigReconciler) Reconcile(ctx context.Context, req ctrl.
 		return ctrl.Result{}, err
 	}
 
-	if bootstrapKubeconfig.Spec.APIServer == "" {
-    	bootstrapKubeconfig.Spec.APIServer = bootstrapKubeconfig.Status.Initialization.ControlPlaneEndpoint
-	}
 	bootstrapKubeconfigData, err := bootstraptoken.GenerateBootstrapKubeconfigFromBootstrapToken(tokenStr, bootstrapKubeconfig)
 	if err != nil {
 		return ctrl.Result{}, err
