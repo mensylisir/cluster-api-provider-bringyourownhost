@@ -64,9 +64,20 @@ func (r *BootstrapKubeconfigReconciler) Reconcile(ctx context.Context, req ctrl.
 	}
 
 	// There already is bootstrap-kubeconfig data associated with this object
-	// Do not create secrets again
+	// Do not create secrets again, but ensure DataSecretName and DataSecretCreated are set for CAPI compatibility
 	if bootstrapKubeconfig.Status.BootstrapKubeconfigData != nil {
-		return ctrl.Result{}, nil
+		helper, err := patch.NewHelper(bootstrapKubeconfig, r.Client)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if bootstrapKubeconfig.Status.DataSecretName == "" {
+			bootstrapKubeconfig.Status.DataSecretName = bootstrapKubeconfig.GetName() + "-token"
+		}
+		trueVal := true
+		if bootstrapKubeconfig.Status.Initialization.DataSecretCreated == nil || !*bootstrapKubeconfig.Status.Initialization.DataSecretCreated {
+			bootstrapKubeconfig.Status.Initialization.DataSecretCreated = &trueVal
+		}
+		return ctrl.Result{}, helper.Patch(ctx, bootstrapKubeconfig)
 	}
 
 	tokenStr, err := bootstraputil.GenerateBootstrapToken()
