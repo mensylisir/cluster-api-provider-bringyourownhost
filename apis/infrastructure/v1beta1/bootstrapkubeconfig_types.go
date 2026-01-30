@@ -48,6 +48,11 @@ type BootstrapKubeconfigStatus struct {
 	// +optional
 	BootstrapKubeconfigData *string `json:"bootstrapKubeconfigData,omitempty"`
 
+	// DataSecretName is the name of the secret that stores the bootstrap data.
+	// This is required by CAPI Machine controller.
+	// +optional
+	DataSecretName string `json:"dataSecretName,omitempty"`
+
 	// Initialization encapsulates the initialization process for the bootstrap data.
 	// This is used by CAPI to track when bootstrap data is ready.
 	// +optional
