@@ -102,14 +102,6 @@ func (r *HostReconciler) reconcileNormal(ctx context.Context, byoHost *infrastru
 	logger.Info("reconcile normal")
 	if byoHost.Status.MachineRef == nil {
 
-		if !conditions.IsTrue(byoHost, infrastructurev1beta1.K8sNodeBootstrapSucceeded) &&
-			!conditions.IsTrue(byoHost, infrastructurev1beta1.K8sComponentsInstallationSucceeded) {
-
-			logger.Info("Host is idle and clean. Marking as Ready for next allocation.")
-
-			conditions.MarkTrue(byoHost, infrastructurev1beta1.K8sNodeBootstrapSucceeded)
-			return ctrl.Result{}, nil
-		}
 		// Check for Zombie state: MachineRef is nil (cleared by Controller force cleanup),
 		// but we are still bootstrapped locally. We must self-clean to ensure consistency.
 		if conditions.IsTrue(byoHost, infrastructurev1beta1.K8sNodeBootstrapSucceeded) ||
@@ -125,8 +117,7 @@ func (r *HostReconciler) reconcileNormal(ctx context.Context, byoHost *infrastru
 			return ctrl.Result{}, nil
 		}
 
-		logger.Info("Machine ref not yet set")
-		conditions.MarkFalse(byoHost, infrastructurev1beta1.K8sNodeBootstrapSucceeded, infrastructurev1beta1.WaitingForMachineRefReason, clusterv1.ConditionSeverityInfo, "")
+		logger.Info("Machine ref not yet set, waiting for assignment")
 		return ctrl.Result{}, nil
 	}
 
