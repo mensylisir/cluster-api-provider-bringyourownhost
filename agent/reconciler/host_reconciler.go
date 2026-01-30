@@ -101,6 +101,15 @@ func (r *HostReconciler) reconcileNormal(ctx context.Context, byoHost *infrastru
 	logger = logger.WithValues("ByoHost", byoHost.Name)
 	logger.Info("reconcile normal")
 	if byoHost.Status.MachineRef == nil {
+
+		 if !conditions.IsTrue(byoHost, infrastructurev1beta1.K8sNodeBootstrapSucceeded) &&
+            !conditions.IsTrue(byoHost, infrastructurev1beta1.K8sComponentsInstallationSucceeded) {
+            
+            logger.Info("Host is idle and clean. Marking as Ready for next allocation.")
+            
+            conditions.MarkTrue(byoHost, infrastructurev1beta1.K8sNodeBootstrapSucceeded) 
+            return ctrl.Result{}, nil
+        }
 		// Check for Zombie state: MachineRef is nil (cleared by Controller force cleanup),
 		// but we are still bootstrapped locally. We must self-clean to ensure consistency.
 		if conditions.IsTrue(byoHost, infrastructurev1beta1.K8sNodeBootstrapSucceeded) ||
@@ -447,7 +456,7 @@ func (r *HostReconciler) cleank8sdirectories(ctx context.Context) error {
 
 	dirs := []string{
 		"/run/kubeadm/*",
-		"/etc/cni/net.d/*",
+		// "/etc/cni/net.d/*",
 	}
 
 	errList := make([]error, 0)
