@@ -66,8 +66,17 @@ func (r *BootstrapKubeconfigReconciler) Reconcile(ctx context.Context, req ctrl.
 	// There already is bootstrap-kubeconfig data associated with this object
 	// Do not create secrets again, but ensure DataSecretCreated is set for CAPI compatibility
 	if bootstrapKubeconfig.Status.BootstrapKubeconfigData != nil {
+		logger.V(4).Info("BootstrapKubeconfigData already exists, checking DataSecretCreated",
+			"name", bootstrapKubeconfig.Name,
+			"dataSecretName", bootstrapKubeconfig.Status.DataSecretName,
+			"dataSecretCreated", bootstrapKubeconfig.Status.Initialization.DataSecretCreated)
+
 		trueVal := true
 		if bootstrapKubeconfig.Status.DataSecretName == "" || bootstrapKubeconfig.Status.Initialization.DataSecretCreated == nil || !*bootstrapKubeconfig.Status.Initialization.DataSecretCreated {
+			logger.V(4).Info("Setting DataSecretName and DataSecretCreated",
+				"name", bootstrapKubeconfig.Name,
+				"dataSecretName", bootstrapKubeconfig.GetName()+"-token")
+
 			helper, err := patch.NewHelper(bootstrapKubeconfig, r.Client)
 			if err != nil {
 				return ctrl.Result{}, err
@@ -78,6 +87,7 @@ func (r *BootstrapKubeconfigReconciler) Reconcile(ctx context.Context, req ctrl.
 			bootstrapKubeconfig.Status.Initialization.DataSecretCreated = &trueVal
 			return ctrl.Result{}, helper.Patch(ctx, bootstrapKubeconfig)
 		}
+		logger.V(4).Info("DataSecretName and DataSecretCreated already set", "name", bootstrapKubeconfig.Name)
 		return ctrl.Result{}, nil
 	}
 
