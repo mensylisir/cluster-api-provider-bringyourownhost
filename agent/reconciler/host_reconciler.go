@@ -102,14 +102,14 @@ func (r *HostReconciler) reconcileNormal(ctx context.Context, byoHost *infrastru
 	logger.Info("reconcile normal")
 	if byoHost.Status.MachineRef == nil {
 
-		 if !conditions.IsTrue(byoHost, infrastructurev1beta1.K8sNodeBootstrapSucceeded) &&
-            !conditions.IsTrue(byoHost, infrastructurev1beta1.K8sComponentsInstallationSucceeded) {
-            
-            logger.Info("Host is idle and clean. Marking as Ready for next allocation.")
-            
-            conditions.MarkTrue(byoHost, infrastructurev1beta1.K8sNodeBootstrapSucceeded) 
-            return ctrl.Result{}, nil
-        }
+		if !conditions.IsTrue(byoHost, infrastructurev1beta1.K8sNodeBootstrapSucceeded) &&
+			!conditions.IsTrue(byoHost, infrastructurev1beta1.K8sComponentsInstallationSucceeded) {
+
+			logger.Info("Host is idle and clean. Marking as Ready for next allocation.")
+
+			conditions.MarkTrue(byoHost, infrastructurev1beta1.K8sNodeBootstrapSucceeded)
+			return ctrl.Result{}, nil
+		}
 		// Check for Zombie state: MachineRef is nil (cleared by Controller force cleanup),
 		// but we are still bootstrapped locally. We must self-clean to ensure consistency.
 		if conditions.IsTrue(byoHost, infrastructurev1beta1.K8sNodeBootstrapSucceeded) ||
@@ -118,7 +118,10 @@ func (r *HostReconciler) reconcileNormal(ctx context.Context, byoHost *infrastru
 			if err := r.hostCleanUp(ctx, byoHost); err != nil {
 				return ctrl.Result{}, err
 			}
-			// Cleanup successful
+			// Cleanup successful, reset conditions and wait for new MachineRef assignment
+			conditions.MarkFalse(byoHost, infrastructurev1beta1.K8sNodeBootstrapSucceeded, infrastructurev1beta1.K8sNodeAbsentReason, clusterv1.ConditionSeverityInfo, "")
+			conditions.MarkFalse(byoHost, infrastructurev1beta1.K8sComponentsInstallationSucceeded, infrastructurev1beta1.K8sNodeAbsentReason, clusterv1.ConditionSeverityInfo, "")
+			logger.Info("Cleanup complete. Waiting for new MachineRef assignment.")
 			return ctrl.Result{}, nil
 		}
 
@@ -147,7 +150,9 @@ func (r *HostReconciler) reconcileNormal(ctx context.Context, byoHost *infrastru
 				if err := r.hostCleanUp(ctx, byoHost); err != nil {
 					return ctrl.Result{}, err
 				}
-				// Cleanup triggered, return to allow fresh reconciliation
+				// Cleanup triggered, reset conditions and wait for new MachineRef assignment
+				conditions.MarkFalse(byoHost, infrastructurev1beta1.K8sNodeBootstrapSucceeded, infrastructurev1beta1.K8sNodeAbsentReason, clusterv1.ConditionSeverityInfo, "")
+				logger.Info("Cleanup complete. Waiting for new MachineRef assignment.")
 				return ctrl.Result{}, nil
 			}
 		}
