@@ -246,3 +246,12 @@ To ensure the Autoscaler picks the right node (e.g., a GPU node for a GPU worklo
     ```
 
 When a Pod requests `nvidia.com/gpu: 1`, the Autoscaler will see that the `gpu-pool` MachineDeployment can satisfy this request and will scale it up, which in turn will claim a ByoHost with the `nvidia.com/gpu.count: 1` label.
+
+## Troubleshooting
+
+If you encounter issues with autoscaler integration, refer to the [Troubleshooting Guide](autoscaler_troubleshooting.md) for detailed diagnostics and solutions to common problems including:
+
+- Annotation key mismatches
+- BootstrapKubeconfig status issues
+- Machine controller cache problems
+- BYOHost cleanup loops
