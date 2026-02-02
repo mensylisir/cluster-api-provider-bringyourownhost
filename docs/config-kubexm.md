@@ -235,3 +235,11 @@ kubectl apply -f kubexm-mode.yaml
 clusterctl get kubeconfig my-cluster > /root/byoh/bootstrap-kubeconfig.conf
 nohup byoh-hostagent --kubeconfig=/root/byoh/bootstrap-kubeconfig.conf > /var/log/byoh-agent.log 2>&1 &
 ```
+
+
+autoscaler 使用的 annotation keys 是：
+- cluster.x-k8s.io/cluster-api-autoscaler-node-group-min-size
+- cluster.x-k8s.io/cluster-api-autoscaler-node-group-max-size
+但我们配置的是：
+- cluster.x-k8s.io/cluster-autoscaler-min-size
+- cluster.x-k8s.io/cluster-autoscaler-max-size

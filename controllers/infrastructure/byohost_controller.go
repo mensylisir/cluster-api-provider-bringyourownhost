@@ -13,11 +13,11 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/cluster-api/util/conditions"
 	"sigs.k8s.io/cluster-api/util/patch"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/cluster-api/util/conditions" 
 
 	infrastructurev1beta1 "github.com/mensylisir/cluster-api-provider-bringyourownhost/apis/infrastructure/v1beta1"
 )
@@ -150,7 +150,7 @@ func (r *ByoHostReconciler) Reconcile(ctx context.Context, req ctrl.Request) (_ 
 			// Remove cleanup-related annotations
 			delete(byoHost.Annotations, infrastructurev1beta1.HostCleanupAnnotation)
 			delete(byoHost.Annotations, cleanupStartedAtAnnotation)
-			delete(byoHost.Annotations, forceCleanupAuditAnnotation) 
+			delete(byoHost.Annotations, forceCleanupAuditAnnotation)
 
 			logger.Info("Host released successfully")
 			return ctrl.Result{}, nil

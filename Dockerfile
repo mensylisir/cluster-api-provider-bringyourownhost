@@ -1,5 +1,5 @@
 FROM --platform=$BUILDPLATFORM golang:1.25.5 AS builder
-ENV GOPROXY=https://goproxy.cn,direct
+# ENV GOPROXY=https://goproxy.cn,direct
 ENV GODEBUG=netdns=go
 ARG TARGETOS
 ARG TARGETARCH
