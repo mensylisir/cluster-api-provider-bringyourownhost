@@ -837,6 +837,21 @@ func (r *ByoMachineReconciler) attachByoHost(ctx context.Context, machineScope *
 		}
 		latestHost.Annotations[infrav1.BundleLookupBaseRegistryAnnotation] = machineScope.ByoCluster.Spec.BundleLookupBaseRegistry
 
+		// Sync Machine.labels to ByoHost.spec.labels for node label propagation
+		// This ensures that node labels (e.g., purpose=worker) are automatically
+		// propagated to the node when kubelet starts
+		if latestHost.Spec.Labels == nil {
+			latestHost.Spec.Labels = make(map[string]string)
+		}
+		for k, v := range machineScope.Machine.Labels {
+			// Skip cluster name label as it's already set
+			if k == clusterv1.ClusterNameLabel {
+				continue
+			}
+			latestHost.Spec.Labels[k] = v
+		}
+		logger.Info("Syncing Machine labels to ByoHost spec.labels", "labels", latestHost.Spec.Labels)
+
 		err = byohostHelper.Patch(ctx, latestHost)
 		if err != nil {
 			logger.Error(err, "failed to patch byohost, will retry", "byohost", latestHost.Name)
