@@ -65,22 +65,12 @@ func (r *BootstrapKubeconfigReconciler) Reconcile(ctx context.Context, req ctrl.
 	// There already is bootstrap-kubeconfig data associated with this object
 	// Do not create secrets again, but ensure DataSecretName and DataSecretCreated are set for CAPI compatibility
 	if bootstrapKubeconfig.Status.BootstrapKubeconfigData != nil {
+		// Even if BootstrapKubeconfigData exists, still populate APIServer from original
 		if err := r.populateFromOriginal(ctx, bootstrapKubeconfig); err != nil {
 			logger.Error(err, "failed to populate from original BootstrapKubeconfig", "name", req.Name)
 		}
-
-		helper, err := patch.NewHelper(bootstrapKubeconfig, r.Client)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		if bootstrapKubeconfig.Status.DataSecretName == "" {
-			bootstrapKubeconfig.Status.DataSecretName = bootstrapKubeconfig.GetName() + "-token"
-		}
-		trueVal := true
-		if bootstrapKubeconfig.Status.Initialization.DataSecretCreated == nil || !*bootstrapKubeconfig.Status.Initialization.DataSecretCreated {
-			bootstrapKubeconfig.Status.Initialization.DataSecretCreated = &trueVal
-		}
-		return ctrl.Result{}, helper.Patch(ctx, bootstrapKubeconfig)
+		// After populating, clear BootstrapKubeconfigData to force regeneration with correct server
+		bootstrapKubeconfig.Status.BootstrapKubeconfigData = nil
 	}
 
 	tokenStr, err := bootstraputil.GenerateBootstrapToken()
