@@ -54,18 +54,21 @@ func (r *BootstrapKubeconfigReconciler) Reconcile(ctx context.Context, req ctrl.
 		return ctrl.Result{}, err
 	}
 
-	// If APIServer or CertificateAuthorityData is empty, populate from the original BootstrapKubeconfig
+	// Always populate APIServer and CertificateAuthorityData if empty
 	// This handles the case where MachineSet clones the BootstrapKubeconfig
 	if bootstrapKubeconfig.Spec.APIServer == "" || bootstrapKubeconfig.Spec.CertificateAuthorityData == "" {
 		if err := r.populateFromOriginal(ctx, bootstrapKubeconfig); err != nil {
 			logger.Error(err, "failed to populate from original BootstrapKubeconfig", "name", req.Name)
-			// Continue anyway - the fields might be populated later
 		}
 	}
 
 	// There already is bootstrap-kubeconfig data associated with this object
 	// Do not create secrets again, but ensure DataSecretName and DataSecretCreated are set for CAPI compatibility
 	if bootstrapKubeconfig.Status.BootstrapKubeconfigData != nil {
+		if err := r.populateFromOriginal(ctx, bootstrapKubeconfig); err != nil {
+			logger.Error(err, "failed to populate from original BootstrapKubeconfig", "name", req.Name)
+		}
+
 		helper, err := patch.NewHelper(bootstrapKubeconfig, r.Client)
 		if err != nil {
 			return ctrl.Result{}, err
