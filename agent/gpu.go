@@ -73,11 +73,14 @@ func parseGPUModel(output string) string {
 	scanner := bufio.NewScanner(strings.NewReader(output))
 	for scanner.Scan() {
 		line := scanner.Text()
-		// Look for "NVIDIA Corporation"
-		if idx := strings.Index(line, "NVIDIA Corporation"); idx != -1 {
-			// Extract everything after "NVIDIA Corporation "
-			// e.g. "Tesla T4 (rev a1)"
-			remaining := strings.TrimSpace(line[idx+len("NVIDIA Corporation"):])
+		if idx := strings.Index(line, "NVIDIA"); idx != -1 {
+			remaining := strings.TrimSpace(line[idx+len("NVIDIA"):])
+
+			if openIdx := strings.Index(remaining, "["); openIdx != -1 {
+				if closeIdx := strings.Index(remaining, "]"); closeIdx != -1 {
+					remaining = strings.TrimSpace(remaining[openIdx+1 : closeIdx])
+				}
+			}
 
 			if revIdx := strings.LastIndex(remaining, "("); revIdx != -1 {
 				remaining = strings.TrimSpace(remaining[:revIdx])
