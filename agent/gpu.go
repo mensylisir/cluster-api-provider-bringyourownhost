@@ -57,11 +57,8 @@ func countGPUs(output string) int {
 }
 
 // parseGPUModel extracts a simplified model name from lspci output
-// Example output: "00:06.0 3D controller: NVIDIA Corporation Tesla T4 (rev a1)"
 func parseGPUModel(output string) string {
-	// Regex to match valid label value characters
-	// Label values must match: (([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])?
-	var invalidCharRegex = regexp.MustCompile(`[^A-Za-z0-9_-.]`)
+	var invalidCharRegex = regexp.MustCompile(`[^A-Za-z0-9_.]|-`)
 
 	scanner := bufio.NewScanner(strings.NewReader(output))
 	for scanner.Scan() {
