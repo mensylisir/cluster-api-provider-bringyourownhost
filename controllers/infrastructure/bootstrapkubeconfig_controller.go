@@ -58,10 +58,12 @@ func (r *BootstrapKubeconfigReconciler) Reconcile(ctx context.Context, req ctrl.
 	// This handles the case where MachineSet clones the BootstrapKubeconfig
 	if bootstrapKubeconfig.Spec.APIServer == "" || bootstrapKubeconfig.Spec.CertificateAuthorityData == "" {
 		if err := r.populateFromOriginal(ctx, bootstrapKubeconfig); err != nil {
-			// If no Machine owner found, this is expected for cloned BootstrapKubeconfig
-			// The controller will populate APIServer from Cluster in the Default() webhook
-			// so we don't fail here - just log and continue
-			logger.Info("BootstrapKubeconfig has no Machine owner, will be populated from Cluster", "name", req.Name)
+			// If no Machine owner found and no BootstrapKubeconfigData exists yet,
+			// we cannot proceed - return and wait for owner to be set
+			if bootstrapKubeconfig.Status.BootstrapKubeconfigData == nil {
+				logger.Info("BootstrapKubeconfig has no Machine owner and no data yet, skipping", "name", req.Name)
+				return ctrl.Result{}, nil
+			}
 		}
 	}
 
@@ -69,12 +71,10 @@ func (r *BootstrapKubeconfigReconciler) Reconcile(ctx context.Context, req ctrl.
 	// Do not create secrets again, but ensure DataSecretName and DataSecretCreated are set for CAPI compatibility
 	if bootstrapKubeconfig.Status.BootstrapKubeconfigData != nil {
 		// Even if BootstrapKubeconfigData exists, still populate APIServer from original
-		// If populateFromOriginal fails (no Machine owner), log and continue
 		if err := r.populateFromOriginal(ctx, bootstrapKubeconfig); err != nil {
-			logger.Info("BootstrapKubeconfig has no Machine owner", "name", req.Name)
+			logger.V(4).Info("Failed to populate from original, using existing data", "name", req.Name)
 		}
-		// After populating, clear BootstrapKubeconfigData to force regeneration with correct server
-		bootstrapKubeconfig.Status.BootstrapKubeconfigData = nil
+		// Do NOT clear BootstrapKubeconfigData - it will be regenerated when APIServer is updated
 	}
 
 	tokenStr, err := bootstraputil.GenerateBootstrapToken()
