@@ -9,7 +9,6 @@ replace golang.org/x/tools => golang.org/x/tools v0.16.1
 replace golang.org/x/net => golang.org/x/net v0.17.0
 
 require (
-	github.com/NVIDIA/go-nvml v0.13.0-1
 	github.com/docker/cli v24.0.7+incompatible
 	github.com/docker/docker v24.0.7+incompatible
 	github.com/go-logr/logr v1.2.3
@@ -135,6 +134,7 @@ require (
 	github.com/spf13/jwalterweatherman v1.1.0 // indirect
 	github.com/spf13/viper v1.15.0 // indirect
 	github.com/stoewer/go-strcase v1.2.0 // indirect
+	github.com/stretchr/testify v1.10.0 // indirect
 	github.com/subosito/gotenv v1.4.2 // indirect
 	github.com/theupdateframework/notary v0.7.0 // indirect
 	github.com/u-root/uio v0.0.0-20220204230159-dac05f7d2cb4 // indirect

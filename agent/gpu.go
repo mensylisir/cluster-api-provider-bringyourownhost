@@ -4,94 +4,85 @@
 package main
 
 import (
+	"encoding/xml"
+	"os/exec"
 	"strings"
 
-	"github.com/NVIDIA/go-nvml/pkg/nvml"
 	"k8s.io/klog/v2"
 )
 
-// GPUInfo holds information about detected GPUs
+type NvidiaSmiLog struct {
+	AttachedGpus int         `xml:"attached_gpus"`
+	Gpus         []GpuDetail `xml:"gpu"`
+}
+
+type GpuDetail struct {
+	ProductName string `xml:"product_name"`
+	Uuid        string `xml:"uuid"`
+	MigMode     struct {
+		CurrentMig string `xml:"current_mig"`
+	} `xml:"mig_mode"`
+	MigDevices struct {
+		MigDevice []struct {
+			Index       int    `xml:"index"`
+			Uuid        string `xml:"uuid"`
+			ProductName string `xml:"product_name"`
+		} `xml:"mig_device"`
+	} `xml:"mig_devices"`
+}
+
 type GPUInfo struct {
 	Present bool
 	Model   string
 	Count   int
 }
 
-// GetGPUInfo detects NVIDIA GPUs using NVML
 func GetGPUInfo() GPUInfo {
 	info := GPUInfo{Present: false, Count: 0}
 
-	ret := nvml.Init()
-	if ret != nvml.SUCCESS {
-		klog.V(4).Infof("NVML Init failed: %v", nvml.ErrorString(ret))
-		return info
-	}
-	defer nvml.Shutdown()
-
-	count, ret := nvml.DeviceGetCount()
-	if ret != nvml.SUCCESS {
-		klog.V(4).Infof("DeviceGetCount failed: %v", nvml.ErrorString(ret))
+	cmd := exec.Command("nvidia-smi", "-q", "-x")
+	output, err := cmd.Output()
+	if err != nil {
+		klog.V(4).Infof("nvidia-smi failed or not found: %v", err)
 		return info
 	}
 
-	if count == 0 {
+	var smiLog NvidiaSmiLog
+	if err := xml.Unmarshal(output, &smiLog); err != nil {
+		klog.V(4).Infof("Failed to parse nvidia-smi XML: %v", err)
+		return info
+	}
+
+	if len(smiLog.Gpus) == 0 {
 		return info
 	}
 
 	info.Present = true
-	info.Count = countLogicalGPUs()
-
-	// Get model name from first physical GPU
-	info.Model = getGPUModel()
+	info.Count = countLogicalGPUs(smiLog.Gpus)
+	info.Model = getGPUModel(smiLog.Gpus)
 
 	return info
 }
 
-func countLogicalGPUs() int {
-	count, ret := nvml.DeviceGetCount()
-	if ret != nvml.SUCCESS {
-		return 0
-	}
-
+func countLogicalGPUs(gpus []GpuDetail) int {
 	total := 0
-	for i := 0; i < count; i++ {
-		device, ret := nvml.DeviceGetHandleByIndex(i)
-		if ret != nvml.SUCCESS {
-			continue
-		}
-
-		mode, _, ret := device.GetMigMode()
-		if ret == nvml.SUCCESS && mode == nvml.DEVICE_MIG_ENABLE {
-			// MIG enabled: count MIG instances
-			maxMig, _ := device.GetMaxMigDeviceCount()
-			for j := 0; j < maxMig; j++ {
-				if _, ret := device.GetMigDeviceHandleByIndex(j); ret == nvml.SUCCESS {
-					total++
-				}
-			}
+	for _, gpu := range gpus {
+		if gpu.MigMode.CurrentMig == "Enabled" {
+			total += len(gpu.MigDevices.MigDevice)
 		} else {
-			// No MIG: count as 1
 			total++
 		}
 	}
 	return total
 }
 
-func getGPUModel() string {
-	count, ret := nvml.DeviceGetCount()
-	if ret != nvml.SUCCESS {
-		return "Unknown"
-	}
-
-	for i := 0; i < count; i++ {
-		device, ret := nvml.DeviceGetHandleByIndex(i)
-		if ret != nvml.SUCCESS {
-			continue
+func getGPUModel(gpus []GpuDetail) string {
+	for _, gpu := range gpus {
+		if gpu.MigMode.CurrentMig == "Enabled" && len(gpu.MigDevices.MigDevice) > 0 {
+			return sanitizeLabelForK8s(gpu.ProductName)
 		}
-
-		name, ret := device.GetName()
-		if ret == nvml.SUCCESS {
-			return sanitizeLabelForK8s(name)
+		if gpu.MigMode.CurrentMig != "Enabled" {
+			return sanitizeLabelForK8s(gpu.ProductName)
 		}
 	}
 	return "Unknown"
