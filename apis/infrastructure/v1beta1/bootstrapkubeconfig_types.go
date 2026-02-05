@@ -38,7 +38,8 @@ type BootstrapKubeconfigSpec struct {
 	InsecureSkipTLSVerify bool `json:"insecure-skip-tls-verify,omitempty"`
 
 	// CertificateAuthorityData contains PEM-encoded certificate authority certificates.
-	CertificateAuthorityData string `json:"certificate-authority-data"`
+	// +optional
+	CertificateAuthorityData string `json:"certificate-authority-data,omitempty"`
 }
 
 // BootstrapKubeconfigStatus defines the observed state of BootstrapKubeconfig
