@@ -4,10 +4,9 @@
 package main
 
 import (
-	"bufio"
-	"os/exec"
 	"strings"
 
+	"github.com/NVIDIA/go-nvml/pkg/nvml"
 	"k8s.io/klog/v2"
 )
 
@@ -18,41 +17,84 @@ type GPUInfo struct {
 	Count   int
 }
 
-// GetGPUInfo detects if an NVIDIA GPU is present and attempts to identify the model
+// GetGPUInfo detects NVIDIA GPUs using NVML
 func GetGPUInfo() GPUInfo {
 	info := GPUInfo{Present: false, Count: 0}
 
-	// Check for NVIDIA GPU using lspci
-	// 10de is the vendor ID for NVIDIA
-	cmd := exec.Command("lspci", "-d", "10de:")
-	output, err := cmd.Output()
-	if err != nil {
-		// lspci might not be installed or failed
-		klog.V(4).Infof("lspci failed or not found: %v", err)
+	ret := nvml.Init()
+	if ret != nvml.SUCCESS {
+		klog.V(4).Infof("NVML Init failed: %v", nvml.ErrorString(ret))
+		return info
+	}
+	defer nvml.Shutdown()
+
+	count, ret := nvml.DeviceGetCount()
+	if ret != nvml.SUCCESS {
+		klog.V(4).Infof("DeviceGetCount failed: %v", nvml.ErrorString(ret))
 		return info
 	}
 
-	if len(output) > 0 {
-		info.Present = true
-		info.Model = parseGPUModel(string(output))
-		info.Count = countGPUs(string(output))
+	if count == 0 {
+		return info
 	}
+
+	info.Present = true
+	info.Count = countLogicalGPUs()
+
+	// Get model name from first physical GPU
+	info.Model = getGPUModel()
 
 	return info
 }
 
-// countGPUs counts the number of NVIDIA devices found in lspci output
-func countGPUs(output string) int {
-	scanner := bufio.NewScanner(strings.NewReader(output))
-	count := 0
-	for scanner.Scan() {
-		line := scanner.Text()
-		// Basic validation: ensure line contains NVIDIA
-		if strings.Contains(line, "NVIDIA") {
-			count++
+func countLogicalGPUs() int {
+	count, ret := nvml.DeviceGetCount()
+	if ret != nvml.SUCCESS {
+		return 0
+	}
+
+	total := 0
+	for i := 0; i < count; i++ {
+		device, ret := nvml.DeviceGetHandleByIndex(i)
+		if ret != nvml.SUCCESS {
+			continue
+		}
+
+		mode, _, ret := device.GetMigMode()
+		if ret == nvml.SUCCESS && mode == nvml.DEVICE_MIG_ENABLE {
+			// MIG enabled: count MIG instances
+			maxMig, _ := device.GetMaxMigDeviceCount()
+			for j := 0; j < maxMig; j++ {
+				if _, ret := device.GetMigDeviceHandleByIndex(j); ret == nvml.SUCCESS {
+					total++
+				}
+			}
+		} else {
+			// No MIG: count as 1
+			total++
 		}
 	}
-	return count
+	return total
+}
+
+func getGPUModel() string {
+	count, ret := nvml.DeviceGetCount()
+	if ret != nvml.SUCCESS {
+		return "Unknown"
+	}
+
+	for i := 0; i < count; i++ {
+		device, ret := nvml.DeviceGetHandleByIndex(i)
+		if ret != nvml.SUCCESS {
+			continue
+		}
+
+		name, ret := device.GetName()
+		if ret == nvml.SUCCESS {
+			return sanitizeLabelForK8s(name)
+		}
+	}
+	return "Unknown"
 }
 
 func isValidLabelChar(r rune) bool {
@@ -66,28 +108,4 @@ func sanitizeLabelForK8s(s string) string {
 		}
 		return '_'
 	}, s), "_")
-}
-
-// parseGPUModel extracts a simplified model name from lspci output
-func parseGPUModel(output string) string {
-	scanner := bufio.NewScanner(strings.NewReader(output))
-	for scanner.Scan() {
-		line := scanner.Text()
-		if idx := strings.Index(line, "NVIDIA"); idx != -1 {
-			remaining := strings.TrimSpace(line[idx+len("NVIDIA"):])
-
-			if openIdx := strings.Index(remaining, "["); openIdx != -1 {
-				if closeIdx := strings.Index(remaining, "]"); closeIdx != -1 {
-					remaining = strings.TrimSpace(remaining[openIdx+1 : closeIdx])
-				}
-			}
-
-			if revIdx := strings.LastIndex(remaining, "("); revIdx != -1 {
-				remaining = strings.TrimSpace(remaining[:revIdx])
-			}
-
-			return sanitizeLabelForK8s(remaining)
-		}
-	}
-	return "Unknown"
 }
