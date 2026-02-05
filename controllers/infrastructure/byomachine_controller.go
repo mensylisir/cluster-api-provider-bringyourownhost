@@ -757,6 +757,17 @@ func (r *ByoMachineReconciler) attachByoHost(ctx context.Context, machineScope *
 			continue
 		}
 
+		// Re-fetch the host from API server to get the latest version after acquiring the lease
+		// This is necessary because tryAcquireLease uses Client.Update which bumps the ResourceVersion
+		// Without re-fetching, the subsequent Patch() would fail due to stale ResourceVersion
+		if err := r.Client.Get(ctx, client.ObjectKey{Namespace: latestHost.Namespace, Name: latestHost.Name}, latestHost); err != nil {
+			logger.Error(err, "failed to re-fetch byohost after acquiring lease", "byohost", latestHost.Name)
+			// Release the lease before retrying
+			_ = r.releaseLease(ctx, latestHost)
+			time.Sleep(exponentialBackoff(attempt))
+			continue
+		}
+
 		// Lease acquired successfully, now try to claim the host
 		byohostHelper, err := patch.NewHelper(latestHost, r.Client)
 		if err != nil {

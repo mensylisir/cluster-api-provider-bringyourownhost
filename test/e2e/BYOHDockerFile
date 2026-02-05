@@ -1,5 +1,5 @@
 ARG BASE_IMAGE=ubuntu:24.04
-FROM $BASE_IMAGE as build
+FROM $BASE_IMAGE AS build
 ARG TARGETARCH
 
 RUN apt-get update \
