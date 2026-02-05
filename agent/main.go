@@ -12,6 +12,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -173,6 +174,13 @@ func main() {
 		return
 	}
 
+	// sanitizeLabelValue removes invalid characters from label values
+	// Label values must match regex: (([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])?
+	var labelValueRegex = regexp.MustCompile(`[^A-Za-z0-9_-.]`)
+	sanitizeLabelValue := func(value string) string {
+		return labelValueRegex.ReplaceAllString(value, "_")
+	}
+
 	_, err = os.Stat(registration.GetBYOHConfigPath())
 	// Enable bootstrap flow if --bootstrap-kubeconfig is provided
 	// and config doesn't already exists in ~/.byoh/
@@ -192,7 +200,7 @@ func main() {
 	if gpuInfo.Present {
 		labels["nvidia.com/gpu.present"] = "true"
 		if gpuInfo.Model != "" {
-			labels["nvidia.com/gpu.model"] = gpuInfo.Model
+			labels["nvidia.com/gpu.model"] = sanitizeLabelValue(gpuInfo.Model)
 		}
 		if gpuInfo.Count > 0 {
 			labels["nvidia.com/gpu.count"] = fmt.Sprintf("%d", gpuInfo.Count)
