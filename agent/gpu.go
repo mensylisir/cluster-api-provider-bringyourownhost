@@ -6,6 +6,7 @@ package main
 import (
 	"bufio"
 	"os/exec"
+	"regexp"
 	"strings"
 
 	"k8s.io/klog/v2"
@@ -58,6 +59,10 @@ func countGPUs(output string) int {
 // parseGPUModel extracts a simplified model name from lspci output
 // Example output: "00:06.0 3D controller: NVIDIA Corporation Tesla T4 (rev a1)"
 func parseGPUModel(output string) string {
+	// Regex to match valid label value characters
+	// Label values must match: (([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])?
+	var invalidCharRegex = regexp.MustCompile(`[^A-Za-z0-9_-.]`)
+
 	scanner := bufio.NewScanner(strings.NewReader(output))
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -72,8 +77,9 @@ func parseGPUModel(output string) string {
 				remaining = strings.TrimSpace(remaining[:revIdx])
 			}
 
-			// Replace spaces with underscores for label safety
-			return strings.ReplaceAll(remaining, " ", "_")
+			// Replace invalid characters with underscores for label safety
+			sanitized := invalidCharRegex.ReplaceAllString(remaining, "_")
+			return sanitized
 		}
 	}
 	return "Unknown"
