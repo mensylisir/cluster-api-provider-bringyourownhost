@@ -920,6 +920,9 @@ func (r *ByoMachineReconciler) markHostForCleanup(ctx context.Context, machineSc
 	// This is critical for scale-down scenarios where the Node needs to be deleted
 	machineScope.ByoHost.Status.MachineRef = nil
 
+	// Also clear the lease annotation to prevent stale lease from blocking future claims
+	delete(machineScope.ByoHost.Annotations, HostLeaseAnnotationKey)
+
 	// Issue the patch for byohost
 	return helper.Patch(ctx, machineScope.ByoHost)
 }
