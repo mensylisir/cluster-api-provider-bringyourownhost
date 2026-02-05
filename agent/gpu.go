@@ -6,7 +6,6 @@ package main
 import (
 	"bufio"
 	"os/exec"
-	"regexp"
 	"strings"
 
 	"k8s.io/klog/v2"
@@ -56,10 +55,21 @@ func countGPUs(output string) int {
 	return count
 }
 
+func isValidLabelChar(r rune) bool {
+	return (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.'
+}
+
+func sanitizeLabelForK8s(s string) string {
+	return strings.TrimRight(strings.Map(func(r rune) rune {
+		if isValidLabelChar(r) {
+			return r
+		}
+		return '_'
+	}, s), "_")
+}
+
 // parseGPUModel extracts a simplified model name from lspci output
 func parseGPUModel(output string) string {
-	var invalidCharRegex = regexp.MustCompile(`[^A-Za-z0-9_.]|-`)
-
 	scanner := bufio.NewScanner(strings.NewReader(output))
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -69,14 +79,11 @@ func parseGPUModel(output string) string {
 			// e.g. "Tesla T4 (rev a1)"
 			remaining := strings.TrimSpace(line[idx+len("NVIDIA Corporation"):])
 
-			// Remove revision info if present
 			if revIdx := strings.LastIndex(remaining, "("); revIdx != -1 {
 				remaining = strings.TrimSpace(remaining[:revIdx])
 			}
 
-			// Replace invalid characters with underscores for label safety
-			sanitized := invalidCharRegex.ReplaceAllString(remaining, "_")
-			return sanitized
+			return sanitizeLabelForK8s(remaining)
 		}
 	}
 	return "Unknown"
