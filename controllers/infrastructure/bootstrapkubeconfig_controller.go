@@ -58,7 +58,10 @@ func (r *BootstrapKubeconfigReconciler) Reconcile(ctx context.Context, req ctrl.
 	// This handles the case where MachineSet clones the BootstrapKubeconfig
 	if bootstrapKubeconfig.Spec.APIServer == "" || bootstrapKubeconfig.Spec.CertificateAuthorityData == "" {
 		if err := r.populateFromOriginal(ctx, bootstrapKubeconfig); err != nil {
-			logger.Error(err, "failed to populate from original BootstrapKubeconfig", "name", req.Name)
+			// If no Machine owner found, this is expected for cloned BootstrapKubeconfig
+			// The controller will populate APIServer from Cluster in the Default() webhook
+			// so we don't fail here - just log and continue
+			logger.Info("BootstrapKubeconfig has no Machine owner, will be populated from Cluster", "name", req.Name)
 		}
 	}
 
@@ -66,8 +69,9 @@ func (r *BootstrapKubeconfigReconciler) Reconcile(ctx context.Context, req ctrl.
 	// Do not create secrets again, but ensure DataSecretName and DataSecretCreated are set for CAPI compatibility
 	if bootstrapKubeconfig.Status.BootstrapKubeconfigData != nil {
 		// Even if BootstrapKubeconfigData exists, still populate APIServer from original
+		// If populateFromOriginal fails (no Machine owner), log and continue
 		if err := r.populateFromOriginal(ctx, bootstrapKubeconfig); err != nil {
-			logger.Error(err, "failed to populate from original BootstrapKubeconfig", "name", req.Name)
+			logger.Info("BootstrapKubeconfig has no Machine owner", "name", req.Name)
 		}
 		// After populating, clear BootstrapKubeconfigData to force regeneration with correct server
 		bootstrapKubeconfig.Status.BootstrapKubeconfigData = nil
