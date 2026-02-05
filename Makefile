@@ -238,7 +238,7 @@ host-agent-binary: $(RELEASE_DIR)
 		-e GOARCH=$(GOARCH) \
 		-v "$$(pwd):/workspace$(DOCKER_VOL_OPTS)" \
 		-w /workspace \
-		golang:1.25.5 \
+		golang:1.24.5 \
 		go build -buildvcs=false -a -ldflags "$(LDFLAGS)" \
 		-o ./bin/$(notdir $(RELEASE_BINARY))-$(GOOS)-$(GOARCH) /workspace/$(HOST_AGENT_DIR)
 
